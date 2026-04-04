@@ -12,6 +12,31 @@ This tool correlates Amazon transaction records from CSV exports with transactio
 - Product Name
 - Shipping Address
 
+The correlation looks:
+- Transactions where the Payee, Imported_Payee, or Notes contains "Amazon"
+AND
+- Transactions within the date window where the billed cost matches the cost of the Amazon order 
+
+A single transaction in Actual Budget for an Amazon purchase may correspond to multiple lines in the Amazon order history, as an Amazon purchase may be fulfilled by multiple vendors. This program will sum up the cost of each line item in the order history that shares a common Order Id. If a match is found with an Actual Budget transaction, the Notes field is updated with enough detail to allow the transaction to be split between multiple budgets.
+
+For example, if the Amazon Order_History.csv file contained (highly simplified):
+```
+    Order ID,Description,Cost
+    12345,Orange juice,$1.99
+    12345,3/4HP Ryobi Router,$59.99
+    12345,CISCO 1900 Router,$95.00
+```
+
+This would be consider a single purchase of $156.98. If this matched a transaction in Actual Budget, the Notes field would be updated to include the tags:
+```
+    #Amazon-Order 12345
+    #Amazon-Product-Name-Split-1 Orange juice #Amazon-Product-Cost-Split-1 $1.99
+    #Amazon-Product-Name-Split-2 3/4HP Ryobi Router #Amazon-Product-Cost-Split-2 $59.99
+    #Amazon-Product-Name-Split-3 CISCO 1900 Router #Amazon-Product-Cost-Split-3 $95.00
+```
+(all as a single line, appended to the existing Notes data).
+
+This allows the transaction in Actual Budget to be split between different categories (groceries, woodworking, computing). The presence of the string "Split-" in the tags allows for regular expression rules in Actual Budget to recognize and act on the tagged data.
 ## Requirements
 
 - Python 3.7 or higher
