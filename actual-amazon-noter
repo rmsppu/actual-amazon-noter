@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+# Copyright (c) rmsppu@merctech.com
+# MIT License - see LICENSE file in repository root for full license text
+#
+# Created with assistance from Kilo Code (model "Kilo Auto Free" ), with human alterations, review and testing by the author.
+
 """
 actual-amazon-noter - Update Actual Budget transaction notes with Amazon order details
 
@@ -26,6 +32,8 @@ from pathlib import Path
 from typing import Any, Optional
 import requests
 
+
+VERSION = "1.0.1"
 
 # Constant tags used to identify records already processed by actual-amazon-noter
 AMAZON_ORDER_ID_TAG = "#Amazon-Order-ID"
@@ -633,9 +641,11 @@ def print_dry_run_json(transaction: dict, amazon_record: AmazonRecord, original_
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Update Actual Budget transaction notes with Amazon order details",
+        description=f"Update Actual Budget transaction notes with Amazon order details (v{VERSION})",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
+Version: {VERSION}
+
 Examples:
     actual-amazon-noter Order_History.csv
         Use environment variables for connection details, dry-run mode
