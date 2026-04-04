@@ -1,0 +1,49 @@
+
+Command-line:
+	actual-amazon-noter [--dry-run [json] | [--execute]] [--days X] [--force] [--actual-http-api URL | --actual-http-api-file /path/to/URLfile ] [--actual-http-api-key SecretKey | --actual-http-api-key-file /path/to/SecretKey ] [--auctual-syncid SyncID | --actual-syncid-file /path/to/SyncID] File.csv File2.csv ...
+
+		--dry-run	this is the default mode, where the changes that would be made are displayed on stdout in CSv format
+		--execute	really update the records in Actual Budget
+
+		--days X	specify the number of days (default=3) that the transaction record must occur after the Amazon record
+
+		--dry-run json	display the changes as JSON output
+
+		--force		if the Notes field contains tags that indicate that the record has already been updated by actual-amazon-noter, replace those tags
+
+		--actual-http-api URL			provide the URL to the actual-http-api server on the command line
+		--actual-http-api-file /path/to/URL.file	provide the path to a file containing either the bare URL or the URL in the form ACTUAL_HTTP_API_URL=http://url
+		--actual-http-key SecretKey			provide the secret key to the actual-http-api server on the command line
+		--actual-http-key-file /path/to/SecretKey.file	provide the path to a file containing either the bare secret key or the key in the form ACTUAL_HTTP_API_KEY=abcd1234
+		--auctual-syncid SyncID			provide the actual budget SyncID on the command line
+		--actual-syncid-file /path/to/SyncID.file	provide the path to a file containing either the bare SyncID or the SyncID ID in the form ACTUAL_SYNCID=
+
+		File.csv	the path to a CSV file produced by an Amazon data export. This may be Order_History.csv, Digital_Content_Orders.csv, Refund_Details.csv, etc.  
+
+Required values:
+	To connect to the actual-http-api instance, the following must be provided
+		the URL of the actual-http-api service
+		the secret key used by actual-http-api
+		the synchronization ID for the budget instance
+	that data can be supplied as a command-line argument, within a file, or as an environment variable.
+
+	The environment variables must be named:
+		ACTUAL_HTTP_API_URL
+		ACTUAL_HTTP_API_KEY
+		ACTUAL_SYNCID
+
+	If the data is kept in a file, it can be formatted as either a bare entry, in which case the file must contain only a single line, or as a key=value form, where the key is identical to the enviroment variable. This
+	allows the three values to be kept in a single file.
+
+Examples:
+	actual-amazon-noter Order_History.csv
+		Details on how to connect to actual-http-api must be supplied through the environment variables ACTUAL_HTTP_API_URL, ACTUAL_HTTP_API_KEY, and ACTUAL_SYNCID
+		the records will not be updated, only printed on-screen
+
+	actual-amazon-noter --execute --actual-http-api-file /path/to/actual.info --actual-syncid-file /path/to/actual.info --actual-http-api https://actual-api:5007 Order_History.csv
+		The file "/path/to/actual.info" contains multiple lines in the form "variable=value", as in:
+			ACTUAL_HTTP_API_KEY=abc123
+			ACTUAL_SYNCID=abc-123-def-456
+
+		
+

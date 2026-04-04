@@ -1,0 +1,894 @@
+#!/usr/bin/env python3
+"""
+actual-amazon-noter - Update Actual Budget transaction notes with Amazon order details
+
+This script correlates Amazon transaction records from CSV exports with
+transactions in Actual Budget, then updates the Notes field with Amazon order details.
+
+Usage:
+    actual-amazon-noter [--dry-run [json] | --execute] [--days X] [--force]
+        [--actual-http-api URL | --actual-http-api-file /path/to/URLfile]
+        [--actual-http-api-key SecretKey | --actual-http-api-key-file /path/to/SecretKey]
+        [--actual-syncid SyncID | --actual-syncid-file /path/to/SyncID]
+        File.csv File2.csv ...
+
+For full documentation, see Overview.md, Status.md, and USAGE.txt
+"""
+
+import argparse
+import csv
+import json
+import os
+import re
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional
+import requests
+
+
+# Constant tags used to identify records already processed by actual-amazon-noter
+AMAZON_ORDER_ID_TAG = "#Amazon-Order-ID"
+AMAZON_ORDER_DATE_TAG = "#Amazon-Order-Date"
+AMAZON_PRODUCT_NAME_TAG = "#Amazon-Product-Name"
+AMAZON_SHIPPING_ADDRESS_TAG = "#Amazon-Shipping-Address"
+
+# Default configuration
+DEFAULT_DAYS_TOLERANCE = 3
+
+# Required environment variable names
+ENV_ACTUAL_HTTP_API_URL = "ACTUAL_HTTP_API_URL"
+ENV_ACTUAL_HTTP_API_KEY = "ACTUAL_HTTP_API_KEY"
+ENV_ACTUAL_SYNCID = "ACTUAL_SYNCID"
+ENV_ACTUAL_BUDGETID = "ACTUAL_BUDGETID"
+
+
+class AmazonOrder:
+    """Represents an aggregated Amazon order (multiple items with same Order ID)"""
+    
+    def __init__(self):
+        self.order_id = ""
+        self.amount = 0.0
+        self.date = None
+        self.product_names = []  # List of product names for multi-item orders
+        self.item_amounts = []   # List of individual item amounts
+        self.shipping_address = ""
+    
+    def add_item(self, record: 'AmazonRecord'):
+        """Add an item to this order"""
+        if not self.order_id:
+            self.order_id = record.order_id
+            self.date = record.date
+            self.shipping_address = record.shipping_address
+        
+        self.amount += record.amount
+        if record.product_name:
+            self.product_names.append(record.product_name)
+        self.item_amounts.append(record.amount)
+    
+    def get_tags(self) -> list:
+        """Get tags to add to transaction notes"""
+        tags = [AMAZON_ORDER_ID_TAG]
+        if self.order_id:
+            tags.append(self.order_id)
+        
+        if self.date:
+            date_str = self.date.strftime("%m-%d-%Y")
+            tags.append(AMAZON_ORDER_DATE_TAG)
+            tags.append(date_str)
+        
+        # Use split tags only for multiple items in a single order
+        if len(self.product_names) > 1:
+            # Multiple items in single order - use Split tags
+            for i, (product_name, item_amount) in enumerate(zip(self.product_names, self.item_amounts)):
+                tags.append(f"#Amazon-Product-Name-Split-{i+1}")
+                tags.append(product_name)
+                tags.append(f"#Amazon-Cost-Split-{i+1}")
+                tags.append(f"${item_amount:.2f}")
+        elif len(self.product_names) == 1:
+            # Single item in order - use standard tags
+            tags.append(AMAZON_PRODUCT_NAME_TAG)
+            tags.append(self.product_names[0])
+        
+        if self.shipping_address:
+            tags.append(AMAZON_SHIPPING_ADDRESS_TAG)
+            tags.append(self.shipping_address)
+        
+        return tags
+
+
+class AmazonRecord:
+    """Represents a single Amazon transaction record from CSV"""
+    
+    def __init__(self, record_type: str, data: dict):
+        self.record_type = record_type
+        self.data = data
+        
+        # Extract relevant fields based on record type
+        if record_type == "Order_History":
+            self.order_id = data.get("Order ID", "")
+            self.amount = self._parse_amount(data.get("Total Amount", ""))
+            self.date = self._parse_date(data.get("Order Date", ""))
+            self.product_name = data.get("Product Name", "")
+            self.shipping_address = data.get("Shipment Address", "")
+        elif record_type == "Digital_Content_Orders":
+            self.order_id = data.get("Order ID", "")
+            self.amount = self._parse_amount(data.get("Transaction Amount", ""))
+            self.date = self._parse_date(data.get("Order Date", ""))
+            self.product_name = data.get("Title", "")
+            self.shipping_address = ""
+        elif record_type == "Refund_Details":
+            self.order_id = data.get("Order ID", "")
+            self.amount = self._parse_amount(data.get("Refund Amount", ""))
+            self.date = self._parse_date(data.get("Refund Date", ""))
+            self.product_name = data.get("Product Name", "")
+            self.shipping_address = ""
+        elif record_type == "Digital_Returns":
+            self.order_id = data.get("Order ID", "")
+            self.amount = self._parse_amount(data.get("Transaction Amount", ""))
+            self.date = self._parse_date(data.get("Return Date", ""))
+            self.product_name = data.get("Title", "")
+            self.shipping_address = ""
+    
+    def _parse_amount(self, value: str) -> float:
+        """Parse amount string to float"""
+        if not value:
+            return 0.0
+        # Remove currency symbols and commas
+        value = value.replace("$", "").replace(",", "").strip()
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    
+    def _parse_date(self, value: str) -> Optional[datetime]:
+        """Parse date string to datetime"""
+        if not value:
+            return None
+        # Try common date formats
+        formats = [
+            "%Y-%m-%dT%H:%M:%SZ",  # 2021-10-02T16:34:20Z (ISO 8601)
+            "%Y-%m-%dT%H:%M:%S",  # 2021-10-02T16:34:20 (ISO 8601 without Z)
+            "%Y-%m-%d",  # 2024-04-04
+            "%m-%d-%Y",  # 04-04-2024
+            "%m/%d/%Y",  # 04/04/2024
+            "%d-%m-%Y",  # 04-04-2024
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(value.strip(), fmt)
+            except ValueError:
+                continue
+        return None
+    
+    def get_tags(self) -> list:
+        """Get tags to add to transaction notes"""
+        tags = [AMAZON_ORDER_ID_TAG]
+        if self.order_id:
+            tags.append(self.order_id)
+        
+        if self.date:
+            date_str = self.date.strftime("%m-%d-%Y")
+            tags.append(AMAZON_ORDER_DATE_TAG)
+            tags.append(date_str)
+        
+        if self.product_name:
+            tags.append(AMAZON_PRODUCT_NAME_TAG)
+            tags.append(self.product_name)
+        
+        if self.shipping_address:
+            tags.append(AMAZON_SHIPPING_ADDRESS_TAG)
+            tags.append(self.shipping_address)
+        
+        return tags
+
+
+class ActualBudgetAPI:
+    """Client for interacting with actual-http-api"""
+    
+    def __init__(self, url: str, key: str, sync_id: str):
+        self.url = url.rstrip("/")
+        self.key = key
+        self.sync_id = sync_id
+        self.session = requests.Session()
+        # Use x-api-key header as shown in curl example
+        self.session.headers.update({"x-api-key": key})
+
+    def get_accounts(self) -> list:
+        """
+        Get all accounts from Actual Budget.
+        
+        Returns:
+            List of account dictionaries
+        """
+        endpoint = f"{self.url}/v1/budgets/{self.sync_id}/accounts"
+        response = self.session.get(endpoint)
+        response.raise_for_status()
+        return response.json().get("data", [])
+
+    def get_transactions(self, account_id: str, since_date: str = None, until_date: str = None) -> list:
+        """
+        Get transactions for a specific account.
+        
+        Args:
+            account_id: The account ID
+            since_date: Starting date (required, but will use default if not provided)
+            until_date: Ending date (optional)
+            
+        Returns:
+            List of transaction dictionaries
+        """
+        endpoint = f"{self.url}/v1/budgets/{self.sync_id}/accounts/{account_id}/transactions"
+        params = {}
+        # since_date is required - use a very early date to get all transactions
+        if since_date:
+            params["since_date"] = since_date
+        else:
+            params["since_date"] = "2016-01-01"  # Very early date to get all transactions
+        if until_date:
+            params["until_date"] = until_date
+        
+        response = self.session.get(endpoint, params=params)
+        response.raise_for_status()
+        return response.json().get("data", [])
+
+    def get_all_transactions(self, since_date: str = None) -> list:
+        """
+        Get all transactions from all accounts.
+        
+        Args:
+            since_date: Starting date for transactions (optional, defaults to earliest)
+            
+        Returns:
+            List of all transaction dictionaries
+        """
+        # Get all accounts
+        accounts = self.get_accounts()
+        all_transactions = []
+        
+        for account in accounts:
+            account_id = account.get("id")
+            if account_id:
+                transactions = self.get_transactions(account_id, since_date=since_date)
+                all_transactions.extend(transactions)
+        
+        return all_transactions
+
+    def get_transactions_by_payee_contains(self, search_string: str) -> list:
+        """
+        Get transactions where the Payee field contains the given string (case insensitive).
+        This searches both payee_name and imported_payee fields.
+        """
+        # Get all transactions from all accounts
+        all_transactions = self.get_all_transactions()
+        search_lower = search_string.lower()
+        return [
+            t for t in all_transactions
+            if search_lower in (t.get("payee_name") or "").lower() or
+               search_lower in (t.get("imported_payee") or "").lower()
+        ]
+
+    def update_transaction(self, transaction_id: str, notes: str) -> dict:
+        """
+        Update a transaction's notes field.
+        
+        Args:
+            transaction_id: The ID of the transaction to update
+            notes: The new notes content
+            
+        Returns:
+            Updated transaction dictionary
+        """
+        endpoint = f"{self.url}/v1/budgets/{self.sync_id}/transactions/{transaction_id}"
+        response = self.session.patch(
+            endpoint,
+            json={"transaction": {"notes": notes}}
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def parse_config_file(file_path: str) -> dict:
+    """
+    Parse a configuration file.
+    
+    Supports two formats:
+    1. Bare string: file contains just the value (only one value per file)
+    2. Key=Value: file contains lines in form KEY=value
+    
+    Returns:
+        Dictionary of config values
+    """
+    config = {}
+    
+    with open(file_path, "r") as f:
+        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    
+    if not lines:
+        return config
+    
+    # Check if it's key=value format
+    has_equals = any("=" in line for line in lines)
+    
+    if has_equals:
+        # Key=value format
+        for line in lines:
+            if "=" in line:
+                key, value = line.split("=", 1)
+                config[key.strip()] = value.strip()
+    else:
+        # Bare string - only valid if there's exactly one non-comment line
+        if len(lines) == 1:
+            # We can't know the key, so return the raw value
+            config["_bare_value"] = lines[0]
+        else:
+            raise ValueError(f"Config file {file_path} contains multiple lines but not in KEY=VALUE format")
+    
+    return config
+
+
+def get_config_value(arg_value: Optional[str], env_name: str, file_path: Optional[str], config: dict) -> Optional[str]:
+    """
+    Get a config value from arguments, environment, or file.
+    
+    Priority: command-line argument > command-line file > environment variable
+    
+    Args:
+        arg_value: Value provided on command line
+        env_name: Name of environment variable
+        file_path: Path to config file (if provided via --file argument)
+        config: Pre-parsed config from file (for KEY=VALUE format)
+        
+    Returns:
+        The config value, or None if not found
+        
+    Raises:
+        ValueError: If both arg_value and file_path are provided
+    """
+    # Command line value takes precedence
+    if arg_value:
+        if file_path:
+            raise ValueError(f"Cannot specify both value and file for {env_name}")
+        return arg_value
+    
+    # Check file path
+    if file_path:
+        file_config = parse_config_file(file_path)
+        # Check if it's key=value format with matching key
+        if env_name in file_config:
+            return file_config[env_name]
+        # Check if it has a bare value
+        if "_bare_value" in file_config:
+            return file_config["_bare_value"]
+        # Check original config dict
+        if env_name in config:
+            return config[env_name]
+        return None
+    
+    # Check environment variable
+    return os.environ.get(env_name)
+
+
+def read_amazon_csv(file_path: str) -> tuple:
+    """
+    Read an Amazon CSV file and determine its type.
+    Aggregates multiple items with the same Order ID into a single AmazonOrder.
+    
+    Args:
+        file_path: Path to the CSV file
+        
+    Returns:
+        Tuple of (record_type, list of AmazonOrder objects)
+    """
+    # Use AmazonOrder for aggregation
+    orders_dict = {}
+    record_type = None
+    
+    with open(file_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        
+        # Determine record type based on field names
+        if "Order ID" in fieldnames and "Total Amount" in fieldnames:
+            record_type = "Order_History"
+        elif "Order ID" in fieldnames and "Transaction Amount" in fieldnames:
+            if "Order Date" in fieldnames:
+                record_type = "Digital_Content_Orders"
+            elif "Refund Date" in fieldnames:
+                record_type = "Refund_Details"
+            else:
+                record_type = "Digital_Content_Orders"  # Default
+        elif "Order ID" in fieldnames and "Refund Amount" in fieldnames:
+            record_type = "Refund_Details"
+        else:
+            # Try to determine from filename
+            basename = os.path.basename(file_path).lower()
+            if "order_history" in basename:
+                record_type = "Order_History"
+            elif "digital_content_orders" in basename:
+                record_type = "Digital_Content_Orders"
+            elif "refund_details" in basename:
+                record_type = "Refund_Details"
+            elif "digital_returns" in basename:
+                record_type = "Digital_Returns"
+        
+        if not record_type:
+            raise ValueError(f"Unable to determine record type for {file_path}")
+        
+        for row in reader:
+            if row:
+                record = AmazonRecord(record_type, row)
+                order_id = record.order_id
+                
+                # Aggregate by Order ID
+                if order_id not in orders_dict:
+                    orders_dict[order_id] = AmazonOrder()
+                
+                orders_dict[order_id].add_item(record)
+    
+    # Convert to list
+    orders = list(orders_dict.values())
+    
+    return record_type, orders
+
+
+def match_transactions(
+    transactions: list,
+    amazon_records: list,
+    days_tolerance: int,
+    is_income: bool = False
+) -> list:
+    """
+    Match Actual Budget transactions with Amazon records.
+    
+    A match occurs when:
+    1. The amount matches exactly
+    2. The Amazon transaction date is within days_tolerance before the Actual transaction date
+    
+    Args:
+        transactions: List of Actual Budget transactions
+        amazon_records: List of AmazonRecord objects
+        days_tolerance: Number of days tolerance for date matching
+        is_income: If True, match income transactions (refunds); otherwise match withdrawals (purchases)
+        
+    Returns:
+        List of (transaction, amazon_record) tuples representing matches
+    """
+    matches = []
+    
+    for transaction in transactions:
+        # Check if it's a withdrawal or income transaction
+        amount = transaction.get("amount", 0)
+        
+        # For income (refunds), we need positive amounts; for withdrawals (purchases), negative
+        if is_income:
+            if amount <= 0:
+                continue
+        else:
+            if amount >= 0:
+                continue
+        
+        trans_date_str = transaction.get("date", "")
+        if not trans_date_str:
+            continue
+        
+        # Parse transaction date
+        trans_date = None
+        for fmt in ["%Y-%m-%d", "%m-%d-%Y", "%m/%d/%Y"]:
+            try:
+                trans_date = datetime.strptime(trans_date_str.strip(), fmt)
+                break
+            except ValueError:
+                continue
+        
+        if not trans_date:
+            continue
+        
+        # Find matching Amazon records
+        for amazon in amazon_records:
+            if not amazon.date:
+                continue
+            
+            # Convert Amazon amount to cents
+            amazon_amount_cents = int(amazon.amount * 100)
+            
+            # Compare: for purchases (Actual = negative, Amazon = positive)
+            # for refunds (Actual = positive, Amazon = negative)
+            # So we check: if Actual amount is negative, compare with positive Amazon
+            #              if Actual amount is positive, compare with negative Amazon
+            if amount < 0:
+                # Purchase: Actual is negative, compare with positive Amazon amount
+                if amazon_amount_cents <= 0:
+                    continue
+                if abs(abs(amount) - amazon_amount_cents) > 100:
+                    continue
+            else:
+                # Refund: Actual is positive, compare with negative Amazon amount
+                if amazon_amount_cents >= 0:
+                    continue
+                if abs(abs(amount) - abs(amazon_amount_cents)) > 100:
+                    continue
+            
+            # Check date match (Amazon date should be before transaction date)
+            date_diff = trans_date - amazon.date
+            if date_diff.days < 0:
+                continue
+            if date_diff.days > days_tolerance:
+                continue
+            
+            matches.append((transaction, amazon))
+            break  # Only match the first valid Amazon record
+    
+    return matches
+
+
+def has_existing_tags(notes: str) -> bool:
+    """Check if notes field already contains Amazon tags from previous processing."""
+    if notes is None:
+        return False
+    return any(tag in notes for tag in [
+        AMAZON_ORDER_ID_TAG,
+        AMAZON_ORDER_DATE_TAG,
+        AMAZON_PRODUCT_NAME_TAG,
+        AMAZON_SHIPPING_ADDRESS_TAG
+    ])
+
+
+def remove_existing_tags(notes: str) -> str:
+    """Remove Amazon tags from notes field."""
+    if notes is None:
+        return ""
+    result = notes
+    
+    # Remove each tag and its associated value
+    for tag in [
+        (AMAZON_SHIPPING_ADDRESS_TAG, AMAZON_PRODUCT_NAME_TAG),
+        (AMAZON_PRODUCT_NAME_TAG, AMAZON_ORDER_DATE_TAG),
+        (AMAZON_ORDER_DATE_TAG, AMAZON_ORDER_ID_TAG),
+        (AMAZON_ORDER_ID_TAG, None),
+    ]:
+        # Find the tag and remove it along with the next word/value
+        pattern = re.compile(re.escape(tag[0]) + r"(\s+\S+)?")
+        result = pattern.sub("", result)
+    
+    # Clean up multiple spaces and trailing tags
+    result = re.sub(r"\s+", " ", result)
+    result = result.strip()
+    
+    return result
+
+
+def create_updated_notes(original_notes: str, amazon_tags: list, force: bool = False) -> str:
+    """
+    Create updated notes string with Amazon tags.
+    
+    Args:
+        original_notes: Original notes content
+        amazon_tags: List of tags to add
+        force: If True, replace existing Amazon tags; otherwise skip
+        
+    Returns:
+        Updated notes string
+    """
+    # Handle None notes
+    notes = original_notes if original_notes is not None else ""
+    
+    # Check for existing tags
+    if has_existing_tags(notes):
+        if force:
+            notes = remove_existing_tags(notes)
+        else:
+            return notes  # Skip - already processed
+    
+    # Add new tags
+    notes = notes.strip() + " " + " ".join(amazon_tags)
+    
+    return notes.strip()
+
+
+def print_dry_run_csv(transaction: dict, amazon_record: AmazonRecord, original_notes: str, new_notes: str):
+    """Print changes in CSV format for dry-run."""
+    print(f"ID: {transaction.get('id')}")
+    print(f"  Payee: {transaction.get('payee')}")
+    print(f"  Date: {transaction.get('date')}")
+    print(f"  Amount: {transaction.get('amount')}")
+    print(f"  Original Notes: {original_notes}")
+    print(f"  New Notes: {new_notes}")
+    print(f"  Amazon Order ID: {amazon_record.order_id}")
+    print(f"  Amazon Date: {amazon_record.date.strftime('%m-%d-%Y') if amazon_record.date else 'N/A'}")
+    # Handle both AmazonRecord and AmazonOrder (aggregated)
+    if hasattr(amazon_record, 'product_names'):
+        # AmazonOrder - show all products and costs
+        for i, (product, cost) in enumerate(zip(amazon_record.product_names, amazon_record.item_amounts)):
+            print(f"  Amazon Product {i+1}: {product} (${cost:.2f})")
+    else:
+        print(f"  Amazon Product: {amazon_record.product_name}")
+    print()
+
+
+def print_dry_run_json(transaction: dict, amazon_record: AmazonRecord, original_notes: str, new_notes: str):
+    """Print changes in JSON format for dry-run."""
+    # Handle both AmazonRecord and AmazonOrder (aggregated)
+    products = None
+    if hasattr(amazon_record, 'product_names'):
+        # AmazonOrder - show all products and costs
+        products = [(p, c) for p, c in zip(amazon_record.product_names, amazon_record.item_amounts)]
+    else:
+        products = [(amazon_record.product_name, None)]
+    
+    output = {
+        "transaction_id": transaction.get("id"),
+        "payee": transaction.get("payee"),
+        "date": transaction.get("date"),
+        "amount": transaction.get("amount"),
+        "original_notes": original_notes,
+        "new_notes": new_notes,
+        "amazon_order_id": amazon_record.order_id,
+        "amazon_date": amazon_record.date.strftime("%m-%d-%Y") if amazon_record.date else None,
+        "amazon_products": products,
+    }
+    print(json.dumps(output, indent=2))
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Update Actual Budget transaction notes with Amazon order details",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    actual-amazon-noter Order_History.csv
+        Use environment variables for connection details, dry-run mode
+    
+    actual-amazon-noter --execute --actual-http-api-file /path/to/config Order_History.csv
+        Update records in Actual Budget using config file
+    
+    actual-amazon-noter --days 5 --force Order_History.csv Refund_Details.csv
+        Match within 5 days, replace existing tags
+"""
+    )
+    
+    # Mode arguments
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--dry-run",
+        nargs="?",  # Allows --dry-run without value, but also --dry-run json
+        const="csv",
+        default="csv",
+        choices=["csv", "json"],
+        help="Dry-run mode (default). Use --dry-run json for JSON output"
+    )
+    mode_group.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually update records in Actual Budget"
+    )
+    
+    # Matching options
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_DAYS_TOLERANCE,
+        help=f"Number of days tolerance for date matching (default: {DEFAULT_DAYS_TOLERANCE})"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace existing Amazon tags in notes field"
+    )
+    
+    # Connection arguments - URL
+    parser.add_argument(
+        "--actual-http-api",
+        dest="actual_http_api",
+        help="URL of actual-http-api server"
+    )
+    parser.add_argument(
+        "--actual-http-api-file",
+        dest="actual_http_api_file",
+        help="Path to file containing API URL"
+    )
+    
+    # Connection arguments - Key
+    parser.add_argument(
+        "--actual-http-api-key",
+        dest="actual_http_api_key",
+        help="Secret key for actual-http-api"
+    )
+    parser.add_argument(
+        "--actual-http-api-key-file",
+        dest="actual_http_api_key_file",
+        help="Path to file containing API key"
+    )
+    
+    # Connection arguments - SyncID
+    parser.add_argument(
+        "--actual-syncid",
+        dest="actual_syncid",
+        help="Budget synchronization ID"
+    )
+    parser.add_argument(
+        "--actual-syncid-file",
+        dest="actual_syncid_file",
+        help="Path to file containing SyncID"
+    )
+    
+    # Connection arguments - BudgetID
+    parser.add_argument(
+        "--actual-budgetid",
+        dest="actual_budgetid",
+        help="Budget ID (from /v1/budgets endpoint)"
+    )
+    parser.add_argument(
+        "--actual-budgetid-file",
+        dest="actual_budgetid_file",
+        help="Path to file containing BudgetID"
+    )
+    
+    # CSV file arguments
+    parser.add_argument(
+        "csv_files",
+        nargs="+",
+        help="CSV files containing Amazon transaction records"
+    )
+    
+    args = parser.parse_args()
+    
+    # Determine mode
+    dry_run = not args.execute
+    if args.dry_run == "csv":
+        output_format = "csv"
+    else:
+        output_format = args.dry_run
+    
+    # If files point to same config file, preload it once
+    actual_http_api_file = None
+    actual_http_api_key_file = None
+    actual_syncid_file = None
+    
+    # Check if all file arguments point to same file
+    if (args.actual_http_api_file and 
+        args.actual_http_api_file == args.actual_http_api_key_file == args.actual_syncid_file == args.actual_budgetid_file):
+        config = parse_config_file(args.actual_http_api_file)
+    else:
+        config = {}
+        
+    # Get required configuration values
+    try:
+        api_url = get_config_value(
+            args.actual_http_api,
+            ENV_ACTUAL_HTTP_API_URL,
+            args.actual_http_api_file,
+            config
+        )
+        api_key = get_config_value(
+            args.actual_http_api_key,
+            ENV_ACTUAL_HTTP_API_KEY,
+            args.actual_http_api_key_file,
+            config
+        )
+        sync_id = get_config_value(
+            args.actual_syncid,
+            ENV_ACTUAL_SYNCID,
+            args.actual_syncid_file,
+            config
+        )
+        budget_id = get_config_value(
+            args.actual_budgetid,
+            ENV_ACTUAL_BUDGETID,
+            args.actual_budgetid_file,
+            config
+        )
+    except ValueError as e:
+        parser.error(str(e))
+    
+    # Validate required arguments
+    missing = []
+    if not api_url:
+        missing.append(ENV_ACTUAL_HTTP_API_URL)
+    if not api_key:
+        missing.append(ENV_ACTUAL_HTTP_API_KEY)
+    if not sync_id:
+        missing.append(ENV_ACTUAL_SYNCID)
+    
+    if missing:
+        print(f"Error: Missing required arguments: {', '.join(missing)}", file=sys.stderr)
+        print(f"These can be provided via environment variables or command-line arguments.", file=sys.stderr)
+        print(f"", file=sys.stderr)
+        print(f"Environment variables:", file=sys.stderr)
+        print(f"  {ENV_ACTUAL_HTTP_API_URL}", file=sys.stderr)
+        print(f"  {ENV_ACTUAL_HTTP_API_KEY}", file=sys.stderr)
+        print(f"  {ENV_ACTUAL_SYNCID}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate CSV files
+    csv_files = args.csv_files
+    if not csv_files:
+        print("Error: At least one CSV file must be provided", file=sys.stderr)
+        sys.exit(1)
+    
+    # Read Amazon CSV files
+    all_amazon_records = []
+    for csv_file in csv_files:
+        if not os.path.exists(csv_file):
+            print(f"Error: File not found: {csv_file}", file=sys.stderr)
+            sys.exit(1)
+        
+        record_type, records = read_amazon_csv(csv_file)
+        all_amazon_records.extend(records)
+        print(f"Loaded {len(records)} records from {csv_file} ({record_type})")
+    
+    if not all_amazon_records:
+        print("Error: No Amazon records found in CSV files", file=sys.stderr)
+        sys.exit(1)
+    
+    # Connect to Actual Budget API
+    api = ActualBudgetAPI(api_url, api_key, sync_id)
+    
+    # Get transactions with "Amazon" in payee
+    print("Fetching transactions from Actual Budget...")
+    transactions = api.get_transactions_by_payee_contains("Amazon")
+    print(f"Found {len(transactions)} transactions with 'Amazon' in payee")
+    
+    # Categorize Amazon records (withdrawals vs income/refunds)
+    purchase_records = [r for r in all_amazon_records if r.amount > 0]
+    refund_records = [r for r in all_amazon_records if r.amount < 0]
+    
+    # Find matches
+    purchase_matches = match_transactions(transactions, purchase_records, args.days, is_income=False)
+    refund_matches = match_transactions(transactions, refund_records, args.days, is_income=True)
+    
+    all_matches = purchase_matches + refund_matches
+    print(f"Found {len(all_matches)} potential matches")
+    
+    # Process matches
+    updated_count = 0
+    skipped_count = 0
+    error_count = 0
+    
+    for transaction, amazon_record in all_matches:
+        original_notes = transaction.get("notes", "")
+        amazon_tags = amazon_record.get_tags()
+        new_notes = create_updated_notes(original_notes, amazon_tags, args.force)
+        
+        # Skip if notes haven't changed
+        if new_notes == original_notes:
+            skipped_count += 1
+            continue
+        
+        if dry_run:
+            # Print changes without updating
+            if output_format == "csv":
+                print_dry_run_csv(transaction, amazon_record, original_notes, new_notes)
+            else:
+                print_dry_run_json(transaction, amazon_record, original_notes, new_notes)
+            updated_count += 1
+        else:
+            # Actually update the transaction
+            try:
+                api.update_transaction(transaction["id"], new_notes)
+                print(f"Updated transaction {transaction['id']}")
+                updated_count += 1
+            except Exception as e:
+                print(f"Error updating transaction {transaction['id']}: {e}", file=sys.stderr)
+                error_count += 1
+    
+    # Print summary
+    print()
+    print(f"Summary:")
+    print(f"  Total matches found: {len(all_matches)}")
+    print(f"  Records updated: {updated_count}")
+    print(f"  Records skipped (already processed): {skipped_count}")
+    if error_count > 0:
+        print(f"  Errors: {error_count}", file=sys.stderr)
+    if dry_run:
+        print(f"  Mode: DRY-RUN (use --execute to actually update)")
+    else:
+        print(f"  Mode: EXECUTE (records have been updated)")
+    
+    if error_count > 0:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

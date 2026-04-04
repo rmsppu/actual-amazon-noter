@@ -1,0 +1,4 @@
+# actual-amazon-noter requirements
+# Python 3.7+
+
+requests>=2.28.0
