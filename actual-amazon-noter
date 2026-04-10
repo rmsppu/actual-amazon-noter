@@ -566,6 +566,67 @@ def remove_existing_tags(notes: str) -> str:
     return result
 
 
+def normalize_tag(tag: str) -> str:
+    """
+    Normalize a user-provided tag to the required format.
+    
+    Rules:
+    - Must begin with a space followed by hash (" #")
+    - No space immediately after the hash sign
+    - If starts with " #", keep as-is
+    - If starts with "#", prepend space only
+    - Otherwise, prepend " #"
+    - Strip internal whitespace after hash if present (e.g., "# text" → " #text")
+    
+    Args:
+        tag: Raw tag string from user
+        
+    Returns:
+        Normalized tag string
+    """
+    if not tag:
+        return ""
+    
+    # Strip leading and trailing whitespace
+    tag = tag.strip()
+    
+    if not tag:
+        return ""
+    
+    # Case 1: Already starts with " #" - keep as-is (but ensure no space after #)
+    if tag.startswith(" #"):
+        tag = tag[2:]  # Remove the " #"
+        # Remove any leading whitespace after the hash
+        tag = tag.lstrip()
+        return " #" + tag if tag else ""
+    
+    # Case 2: Starts with "#" but no leading space
+    if tag.startswith("#"):
+        tag = tag[1:]  # Remove the "#"
+        # Remove any leading whitespace after the hash
+        tag = tag.lstrip()
+        return " #" + tag if tag else ""
+    
+    # Case 3: Doesn't start with # - prepend " #"
+    return " #" + tag
+
+
+def process_user_tags(user_tags: Optional[list]) -> list:
+    """
+    Process user-provided tags into normalized format.
+    
+    Args:
+        user_tags: List of raw tag strings from command line, or None
+        
+    Returns:
+        List of normalized tags
+    """
+    if not user_tags:
+        return []
+    
+    return [normalize_tag(tag) for tag in user_tags]
+
+
 def create_updated_notes(original_notes: str, amazon_tags: list, force: bool = False) -> str:
     """
     Create updated notes string with Amazon tags.
@@ -685,6 +746,14 @@ Examples:
         "--force",
         action="store_true",
         help="Replace existing Amazon tags in notes field"
+    )
+    parser.add_argument(
+        "-t",
+        "--tag",
+        dest="user_tags",
+        action="append",
+        default=None,
+        help="Add custom tag to matching transactions (can be used multiple times)"
     )
     
     # Connection arguments - URL
@@ -851,6 +920,11 @@ Examples:
     all_matches = purchase_matches + refund_matches
     print(f"Found {len(all_matches)} potential matches")
     
+    # Process user-provided tags
+    user_tags_normalized = process_user_tags(args.user_tags)
+    if user_tags_normalized:
+        print(f"User tags to append: {' '.join(user_tags_normalized)}")
+    
     # Process matches
     updated_count = 0
     skipped_count = 0
@@ -859,6 +933,8 @@ Examples:
     for transaction, amazon_record in all_matches:
         original_notes = transaction.get("notes", "")
         amazon_tags = amazon_record.get_tags()
+        # Append user-provided tags to Amazon tags
+        amazon_tags.extend(user_tags_normalized)
         new_notes = create_updated_notes(original_notes, amazon_tags, args.force)
         
         # Skip if notes haven't changed

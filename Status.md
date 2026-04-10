@@ -115,6 +115,41 @@ Untested:
 * --force option
 * Correlation against order  data from Digital_Content_Orders.csv
 
+## Recent Additions
+### Custom Tags Option (-t)
+Added command-line option `-t` (or `--tag`) to allow users to add custom tags to matching transactions.
+
+**Usage:**
+```
+./actual-amazon-noter -t "tag1" -t "tag2" -t "tag3" Order_History.csv
+```
+
+**Features:**
+- Can be specified multiple times, each occurrence adds a tag
+- Tags are automatically normalized to follow the format " #tag"
+- Tag normalization rules:
+  - Input "tag" → normalized to " #tag"
+  - Input "# tag" → normalized to " #tag" (space after # is removed)
+  - Input " #tag" → kept as-is (already correct format)
+  - Empty tags are discarded
+- User-provided tags are appended after the standard Amazon tags (#Amazon-Order-ID, #Amazon-Order-Date, etc.)
+- All custom tags appear with a space followed by hash (SPACE#)
+
+**Examples:**
+```
+# Simple tag
+./actual-amazon-noter -t "invoice" Order_History.csv
+Result: ... #Amazon-Order-ID ABC123 ... #invoice
+
+# Multiple tags
+./actual-amazon-noter -t "follow-up" -t "urgent" Order_History.csv
+Result: ... #Amazon-Order-ID ABC123 ... #follow-up #urgent
+
+# Tags with spaces
+./actual-amazon-noter -t "needs verification" Order_History.csv
+Result: ... #Amazon-Order-ID ABC123 ... #needs verification
+```
+
 ## Refunds
 No processing of refunds is present yet. Providing the datafiles Refund_Details.csv or Digital_Returns.csv will almost certainly fail.
 
