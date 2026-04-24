@@ -61,6 +61,8 @@ class AmazonOrder:
         self.product_names = []  # List of product names for multi-item orders
         self.item_amounts = []   # List of individual item amounts
         self.shipping_address = ""
+        # PR FIX: Added currency tracking for aggregated multi-item orders
+        self.currency = ""
     
     def add_item(self, record: 'AmazonRecord'):
         """Add an item to this order"""
@@ -68,6 +70,8 @@ class AmazonOrder:
             self.order_id = record.order_id
             self.date = record.date
             self.shipping_address = record.shipping_address
+            # PR FIX: Extract currency dynamically from the record, defaulting to GBP if missing
+            self.currency = getattr(record, "currency", "GBP")
         
         self.amount += record.amount
         if record.product_name:
@@ -92,7 +96,8 @@ class AmazonOrder:
                 tags.append(f"#Amazon-Product-Name-Split-{i+1}")
                 tags.append(product_name)
                 tags.append(f"#Amazon-Cost-Split-{i+1}")
-                tags.append(f"${item_amount:.2f}")
+                # PR FIX: Replaced hardcoded '$' with dynamic `self.currency` to support international budgets
+                tags.append(f"{self.currency} {item_amount:.2f}")
         elif len(self.product_names) == 1:
             # Single item in order - use standard tags
             tags.append(AMAZON_PRODUCT_NAME_TAG)
@@ -111,6 +116,8 @@ class AmazonRecord:
     def __init__(self, record_type: str, data: dict):
         self.record_type = record_type
         self.data = data
+        # PR FIX: Extracted 'Currency' field natively from CSV to support non-USD accounts
+        self.currency = data.get("Currency", "GBP")
         
         # Extract relevant fields based on record type
         if record_type == "Order_History":
@@ -118,7 +125,8 @@ class AmazonRecord:
             self.amount = self._parse_amount(data.get("Total Amount", ""))
             self.date = self._parse_date(data.get("Order Date", ""))
             self.product_name = data.get("Product Name", "")
-            self.shipping_address = data.get("Shipment Address", "")
+            # PR FIX: Changed 'Shipment Address' to 'Shipping Address' to map correctly to official Amazon data exports
+            self.shipping_address = data.get("Shipping Address", "")
         elif record_type == "Digital_Content_Orders":
             self.order_id = data.get("Order ID", "")
             self.amount = self._parse_amount(data.get("Transaction Amount", ""))
@@ -463,7 +471,9 @@ def match_transactions(
         List of (transaction, amazon_record) tuples representing matches
     """
     matches = []
-    
+    # PR FIX: Added `used_amazon` set to track which records have been processed. 
+    # This prevents a single Amazon order from mapping to multiple identical bank charges on the same day.
+    used_amazon = set()
     for transaction in transactions:
         # Check if it's a withdrawal or income transaction
         amount = transaction.get("amount", 0)
@@ -493,7 +503,10 @@ def match_transactions(
             continue
         
         # Find matching Amazon records
-        for amazon in amazon_records:
+        for i, amazon in enumerate(amazon_records):
+            # PR FIX: Skip Amazon records that have already been matched to an identical bank transaction
+            if i in used_amazon:
+                continue
             if not amazon.date:
                 continue
             
@@ -519,12 +532,16 @@ def match_transactions(
             
             # Check date match (Amazon date should be before transaction date)
             date_diff = trans_date - amazon.date
-            if date_diff.days < 0:
+            # PR FIX: Adjusted limit to -2 days to account for timezone offsets between
+            # Actual's midnight timestamps and Amazon's UTC timestamps (fixes same-day matching).
+            if date_diff.days < -2:
                 continue
             if date_diff.days > days_tolerance:
                 continue
             
             matches.append((transaction, amazon))
+            # PR FIX: Mark this Amazon record index as used to prevent duplicate mappings
+            used_amazon.add(i)
             break  # Only match the first valid Amazon record
     
     return matches
@@ -669,7 +686,8 @@ def print_dry_run_csv(transaction: dict, amazon_record: AmazonRecord, original_n
     if hasattr(amazon_record, 'product_names'):
         # AmazonOrder - show all products and costs
         for i, (product, cost) in enumerate(zip(amazon_record.product_names, amazon_record.item_amounts)):
-            print(f"  Amazon Product {i+1}: {product} (${cost:.2f})")
+            # PR FIX: Pulls dynamic currency for Dry-Run display
+            print(f"  Amazon Product {i+1}: {product} ({getattr(amazon_record, 'currency', 'GBP')} {cost:.2f})")
     else:
         print(f"  Amazon Product: {amazon_record.product_name}")
     print()
@@ -906,7 +924,8 @@ Examples:
     
     # Get transactions with "Amazon" in payee
     print("Fetching transactions from Actual Budget...")
-    transactions = api.get_transactions_by_payee_contains("Amazon")
+    # PR FIX: Concatenated searches for "Amazon" and "Amz" to broadly support international bank variations (e.g., Amznmktplace)
+    transactions = api.get_transactions_by_payee_contains("Amazon") + api.get_transactions_by_payee_contains("Amz")
     print(f"Found {len(transactions)} transactions with 'Amazon' in payee")
     
     # Categorize Amazon records (withdrawals vs income/refunds)
