@@ -415,7 +415,7 @@
     <header>
         <span class="app-badge">Actual Budget Companion</span>
         <h1>eCommerce Noter</h1>
-        <p class="subtitle">Correlate and split eCommerce order exports (e.g., Amazon, PayPal) with your budget transactions</p>
+        <p class="subtitle">Correlate and split eCommerce order exports (e.g., Amazon, PayPal, eBay) with your budget transactions</p>
     </header>
 
     <main class="glass-card">
@@ -533,9 +533,9 @@
             <!-- Drag and Drop uploader -->
             <div class="drop-zone" id="dropZone">
                 <div class="drop-zone-icon">📦</div>
-                <div class="drop-zone-text" id="dropZoneText">Drag & Drop CSV file here</div>
-                <div class="drop-zone-subtext" id="dropZoneSubtext">Supports Amazon and PayPal exports</div>
-                <input type="file" id="fileInput" accept=".csv" style="display: none;">
+                <div class="drop-zone-text" id="dropZoneText">Drag & Drop CSV or XLSX file here</div>
+                <div class="drop-zone-subtext" id="dropZoneSubtext">Supports Amazon, PayPal, and eBay exports</div>
+                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" style="display: none;">
                 
                 <div class="file-info" id="fileInfo">
                     <span class="file-info-icon">📄</span>
@@ -546,7 +546,7 @@
             <!-- Run Button -->
             <button type="submit" class="btn" id="submitBtn" disabled>
                 <div class="btn-spinner" id="btnSpinner"></div>
-                <span id="btnText">Process CSV</span>
+                <span id="btnText">Process File</span>
             </button>
         </form>
 
@@ -627,13 +627,14 @@
     });
 
     function handleFile(file) {
-        if (file.name.endsWith('.csv')) {
+        const lowerName = file.name.toLowerCase();
+        if (lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
             selectedFile = file;
             fileName.textContent = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
             fileInfo.style.display = 'flex';
             submitBtn.disabled = false;
         } else {
-            alert('Please select a valid CSV file.');
+            alert('Please select a valid CSV or XLSX file.');
         }
     }
 
