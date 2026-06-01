@@ -33,6 +33,10 @@ if not commit_hash:
     except Exception:
         commit_hash = "unknown"
 
+import sys
+app_version = os.environ.get('APP_VERSION', 'unknown')
+print(f"rr4444/actual-ecommerce-noter version {app_version} (commit hash: {commit_hash})", file=sys.stderr, flush=True)
+
 @app.route('/')
 def index():
     return render_template('index.html', commit_hash=commit_hash)

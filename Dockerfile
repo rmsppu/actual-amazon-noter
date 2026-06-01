@@ -21,6 +21,10 @@ RUN if [ -d .git ]; then \
       echo "unknown" > commit_hash.txt; \
     fi
 
+ARG VERSION=unknown
+ENV APP_VERSION=$VERSION
+
+
 # Ensure the python script is executable
 RUN chmod +x actual-ecommerce-noter
 
