@@ -42,6 +42,12 @@ PAYPAL_DATE_TAG = "#PayPal-Date"
 PAYPAL_PAYEE_TAG = "#PayPal-Payee"
 PAYPAL_ITEM_TITLE_TAG = "#PayPal-Item-Title"
 
+# Constant eBay tags
+EBAY_ORDER_ID_TAG = "#eBay-Order-ID"
+EBAY_ORDER_DATE_TAG = "#eBay-Order-Date"
+EBAY_PRODUCT_NAME_TAG = "#eBay-Product-Name"
+EBAY_SELLER_NAME_TAG = "#eBay-Seller-Name"
+
 # Default configuration
 DEFAULT_DAYS_TOLERANCE = 3
 DEFAULT_BASE_CURRENCY = os.environ.get("ACTUAL_BASE_CURRENCY", "GBP")
@@ -270,6 +276,87 @@ class PaypalOrder:
         return tags
 
 
+class EbayRecord:
+    """Represents a single eBay transaction record from XLSX"""
+    
+    def __init__(self, data: dict):
+        self.data = data
+        self.order_id = str(data.get("OrderNumber", "")).strip()
+        self.date_str = str(data.get("OrderDate", "")).strip()
+        self.item_id = str(data.get("ItemID", "")).strip()
+        self.seller = str(data.get("Seller", "")).strip()
+        self.product_name = str(data.get("ItemName", "")).strip()
+        self.currency = str(data.get("Currency", DEFAULT_BASE_CURRENCY)).strip() or DEFAULT_BASE_CURRENCY
+        
+        # Parse price
+        try:
+            self.item_price = float(data.get("ItemPrice", 0.0))
+        except (ValueError, TypeError):
+            self.item_price = 0.0
+            
+        # Parse date (e.g. "May 25, 2026")
+        self.date = None
+        if self.date_str:
+            for fmt in ["%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"]:
+                try:
+                    self.date = datetime.strptime(self.date_str, fmt)
+                    break
+                except ValueError:
+                    continue
+
+
+class EbayOrder:
+    """Aggregated eBay order matching the Amazon/PayPal duck-typed interface"""
+    
+    def __init__(self):
+        self.order_id = None
+        self.date = None
+        self.seller = None
+        self.currency = None
+        self.product_names = []
+        self.item_amounts = []
+        self.shipping_address = ""
+        
+    def add_item(self, record: EbayRecord):
+        if not self.order_id:
+            self.order_id = record.order_id
+            self.date = record.date
+            self.seller = record.seller
+            self.currency = record.currency
+        
+        self.product_names.append(record.product_name)
+        self.item_amounts.append(record.item_price)
+        
+    @property
+    def amount(self) -> float:
+        return sum(self.item_amounts)
+        
+    def get_tags(self) -> list:
+        tags = [EBAY_ORDER_ID_TAG]
+        if self.order_id:
+            tags.append(self.order_id)
+            
+        if self.date:
+            tags.append(EBAY_ORDER_DATE_TAG)
+            tags.append(self.date.strftime("%m-%d-%Y"))
+            
+        if self.seller:
+            tags.append(EBAY_SELLER_NAME_TAG)
+            tags.append(self.seller)
+            
+        if len(self.product_names) > 1:
+            for i, (pname, iamt) in enumerate(zip(self.product_names, self.item_amounts)):
+                tags.append(f"#eBay-Product-Name-Split-{i+1}")
+                tags.append(pname)
+                tags.append(f"#eBay-Cost-Split-{i+1}")
+                tags.append(f"{self.currency} {iamt:.2f}")
+        elif len(self.product_names) == 1:
+            tags.append(EBAY_PRODUCT_NAME_TAG)
+            tags.append(self.product_names[0])
+            
+        return tags
+
+
 class ActualBudgetAPI:
     """Client for interacting with actual-http-api"""
     
@@ -490,10 +577,46 @@ def read_paypal_csv(file_path: str, base_currency: str = DEFAULT_BASE_CURRENCY) 
     return "PayPal_Download", valid_orders
 
 
+def read_ebay_xlsx(file_path: str) -> tuple:
+    """Read an eBay XLSX purchase history file using openpyxl."""
+    import openpyxl
+    orders_dict = {}
+    
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+    sheet = wb.active
+    
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise ValueError(f"XLSX file is empty: {file_path}")
+        
+    headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+    required = ["OrderNumber", "ItemName", "ItemPrice"]
+    for req in required:
+        if req not in headers:
+            raise ValueError(f"Missing required eBay header: {req}")
+            
+    for row in rows[1:]:
+        if not row or all(v is None for v in row):
+            continue
+        row_dict = dict(zip(headers, row))
+        record = EbayRecord(row_dict)
+        order_id = record.order_id
+        if not order_id:
+            continue
+            
+        if order_id not in orders_dict:
+            orders_dict[order_id] = EbayOrder()
+            
+        orders_dict[order_id].add_item(record)
+        
+    orders = list(orders_dict.values())
+    return "eBay_Purchase_History", orders
+
+
 def clean_payee_words(payee: str) -> set:
     if not payee:
         return set()
-    ignore_words = {"paypal", "payments", "payment", "limited", "ltd", "uk", "group", "co", "corporation", "corp", "inc", "direct", "debit", "bank", "deposit", "to", "account"}
+    ignore_words = {"paypal", "payments", "payment", "limited", "ltd", "uk", "group", "co", "corporation", "corp", "inc", "direct", "debit", "bank", "deposit", "to", "account", "ebay"}
     words = re.findall(r'[a-z0-9]+', payee.lower())
     return {w for w in words if w not in ignore_words and len(w) > 1}
 
@@ -519,10 +642,10 @@ def match_transactions(
     amazon_records: list,
     days_tolerance: int,
     amount_tolerance: int,
-    is_paypal: bool = False,
+    verify_payee: bool = False,
     is_income: bool = False
 ) -> list:
-    """Match Actual Budget transactions with aggregated orders (Amazon or PayPal)"""
+    """Match Actual Budget transactions with aggregated orders (Amazon, PayPal or eBay)"""
     matches = []
     used_amazon = set()
     for transaction in transactions:
@@ -569,9 +692,9 @@ def match_transactions(
                 if abs(abs(amount) - abs(amazon_amount_cents)) > amount_tolerance:
                     continue
             
-            if is_paypal:
+            if verify_payee:
                 budget_payee = transaction.get("payee_name") or transaction.get("imported_payee") or ""
-                csv_payee = getattr(amazon, 'payee', '') or getattr(amazon, 'name', '') or ''
+                csv_payee = getattr(amazon, 'payee', '') or getattr(amazon, 'name', '') or getattr(amazon, 'seller', '') or ''
                 if not payee_matches(budget_payee, csv_payee):
                     continue
             
@@ -773,9 +896,9 @@ Examples:
     )
     parser.add_argument(
         "--format",
-        choices=["amazon", "paypal", "auto"],
+        choices=["amazon", "paypal", "ebay", "auto"],
         default="auto",
-        help="CSV source format (amazon, paypal, or auto-detect based on headers)"
+        help="CSV/XLSX source format (amazon, paypal, ebay, or auto-detect based on headers/extensions)"
     )
     
     parser.add_argument("--actual-http-api", dest="actual_http_api", help="URL of actual-http-api server")
@@ -830,18 +953,26 @@ Examples:
             
         file_format = args.format
         if file_format == "auto":
-            with open(csv_file, "r", encoding="utf-8-sig") as f:
-                header_line = f.readline()
-                if "Transaction ID" in header_line or "Receipt ID" in header_line:
-                    file_format = "paypal"
-                else:
-                    file_format = "amazon"
-                    
+            if csv_file.lower().endswith(".xlsx") or csv_file.lower().endswith(".xls"):
+                file_format = "ebay"
+            else:
+                with open(csv_file, "r", encoding="utf-8-sig") as f:
+                    header_line = f.readline()
+                    if "Transaction ID" in header_line or "Receipt ID" in header_line:
+                        file_format = "paypal"
+                    else:
+                        file_format = "amazon"
+                        
         if file_format == "paypal":
             record_type, records = read_paypal_csv(csv_file, base_currency=args.base_currency)
             all_records.extend(records)
             print(f"Loaded {len(records)} records from {csv_file} (PayPal)")
             detected_format = "paypal"
+        elif file_format == "ebay":
+            record_type, records = read_ebay_xlsx(csv_file)
+            all_records.extend(records)
+            print(f"Loaded {len(records)} records from {csv_file} (eBay)")
+            detected_format = "ebay"
         else:
             record_type, records = read_amazon_csv(csv_file)
             all_records.extend(records)
@@ -853,19 +984,22 @@ Examples:
     if detected_format == "paypal" and args.days == DEFAULT_DAYS_TOLERANCE:
         days_tolerance = 7
         print(f"PayPal format detected: dynamically adjusting default tolerance to {days_tolerance} days")
-
+    elif detected_format == "ebay" and args.days == DEFAULT_DAYS_TOLERANCE:
+        days_tolerance = 7
+        print(f"eBay format detected: dynamically adjusting default tolerance to {days_tolerance} days")
+ 
     amount_tolerance_val = args.amount_tolerance
     if amount_tolerance_val is None:
-        if detected_format == "paypal":
+        if detected_format in ["paypal", "ebay"]:
             amount_tolerance = 0
-            print("PayPal format detected: dynamically adjusting default amount tolerance to 0.00")
+            print(f"{detected_format.capitalize()} format detected: dynamically adjusting default amount tolerance to 0.00")
         else:
             amount_tolerance = 100
             print("Amazon format detected: dynamically adjusting default amount tolerance to 1.00")
     else:
         amount_tolerance = int(round(amount_tolerance_val * 100))
         print(f"Using user-specified amount tolerance of {amount_tolerance_val:.2f} ({amount_tolerance} cents)")
-
+ 
     if not all_records:
         print("Error: No transaction records loaded", file=sys.stderr)
         sys.exit(1)
@@ -890,6 +1024,14 @@ Examples:
                 if t["id"] not in existing_ids:
                     transactions.append(t)
         print(f"Found {len(transactions)} transactions matching PayPal criteria")
+    elif detected_format == "ebay":
+        search_lower = "ebay"
+        transactions = [
+            t for t in all_transactions
+            if search_lower in (t.get("payee_name") or "").lower() or
+               search_lower in (t.get("imported_payee") or "").lower()
+        ]
+        print(f"Found {len(transactions)} transactions matching eBay criteria")
     else:
         search_lower = "amazon"
         search_lower2 = "amz"
@@ -905,8 +1047,8 @@ Examples:
     purchase_records = [r for r in all_records if r.amount > 0]
     refund_records = [r for r in all_records if r.amount < 0]
     
-    purchase_matches = match_transactions(transactions, purchase_records, days_tolerance, amount_tolerance, is_paypal=(detected_format == "paypal"), is_income=False)
-    refund_matches = match_transactions(transactions, refund_records, days_tolerance, amount_tolerance, is_paypal=(detected_format == "paypal"), is_income=True)
+    purchase_matches = match_transactions(transactions, purchase_records, days_tolerance, amount_tolerance, verify_payee=(detected_format in ["paypal", "ebay"]), is_income=False)
+    refund_matches = match_transactions(transactions, refund_records, days_tolerance, amount_tolerance, verify_payee=(detected_format in ["paypal", "ebay"]), is_income=True)
     
     all_matches = purchase_matches + refund_matches
     print(f"Found {len(all_matches)} potential matches")

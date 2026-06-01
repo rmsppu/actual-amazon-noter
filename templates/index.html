@@ -450,13 +450,14 @@
 
                 <div class="setting-card">
                     <div>
-                        <div class="setting-title">CSV Source Format</div>
-                        <div class="setting-desc">Select which format of CSV you are uploading.</div>
+                        <div class="setting-title">File Source Format</div>
+                        <div class="setting-desc">Select which format of CSV/XLSX you are uploading.</div>
                     </div>
                     <select id="formatSelect" class="number-input" style="width: auto; padding: 8px 12px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #fff; border-radius: 8px; outline: none; cursor: pointer;">
                         <option value="auto" style="background: #1e1e2f; color: #fff;">Auto-Detect Format</option>
-                        <option value="amazon" style="background: #1e1e2f; color: #fff;">Amazon (Order History)</option>
-                        <option value="paypal" style="background: #1e1e2f; color: #fff;">PayPal (UK Download)</option>
+                        <option value="amazon" style="background: #1e1e2f; color: #fff;">Amazon (Order History CSV)</option>
+                        <option value="paypal" style="background: #1e1e2f; color: #fff;">PayPal (UK Download CSV)</option>
+                        <option value="ebay" style="background: #1e1e2f; color: #fff;">eBay (Purchase History XLSX)</option>
                     </select>
                 </div>
 
@@ -651,7 +652,8 @@
         const val = formatSelect.value;
         if (val === 'amazon') return 'Process Amazon CSV';
         if (val === 'paypal') return 'Process PayPal CSV';
-        return 'Process CSV';
+        if (val === 'ebay') return 'Process eBay XLSX';
+        return 'Process File';
     };
 
     function updateGhostedStates() {
@@ -691,6 +693,9 @@
             } else if (formatSelect.value === 'amazon') {
                 daysInput.value = '3';
                 amountInput.value = '1.00';
+            } else if (formatSelect.value === 'ebay') {
+                daysInput.value = '7';
+                amountInput.value = '0.00';
             }
         }
     }

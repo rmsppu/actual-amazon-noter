@@ -10,6 +10,7 @@ A companion utility and web companion for [Actual Budget](https://actualbudget.o
 ## Table of Contents
 
 * [Key Features](#key-features)
+* [Data Retrieval & Platform Limitations](#data-retrieval--platform-limitations)
 * [Design Decisions & Matching Logic](#design-decisions--matching-logic)
   * [Why Noting instead of Ledger Imports?](#why-noting-instead-of-ledger-imports)
   * [Why Standard PayPal CSV over QuickBooks IIF?](#why-standard-paypal-csv-over-quickbooks-iif)
@@ -46,6 +47,23 @@ A companion utility and web companion for [Actual Budget](https://actualbudget.o
 - **Smart Explicit Format Selection**: Provides explicit dropdown selection in the GUI and a `--format amazon|paypal|auto` flag in the CLI to avoid header schema ambiguities.
 - **Integrated Web Interface**: Features an interactive dashboard with a drag-and-drop CSV uploader, execution controls, dry-run simulation, real-time colorized logs, and raw connection diagnostics.
 - **Multi-Currency Support**: Dynamically extracts currency details from the source CSV to ensure dry-run previews and split notes are accurately localized.
+
+---
+
+## Data Retrieval & Platform Limitations
+
+Due to restrictive platform policies, transaction history exports from major e-commerce platforms must be retrieved manually. E-commerce platforms generally restrict user-accessible data exports to the absolute minimum functionality legally enforced by consumer protection and privacy regulations.
+
+### 💳 Amazon & PayPal Manual Export
+Exporting data from Amazon and PayPal is an unavoidably manual workflow:
+* **Amazon Purchase History**: Download your detailed orders CSV by submitting a data request via the [Amazon Privacy Central Data Request Page](https://www.amazon.co.uk/hz/privacy-central/data-requests/preview.html). You can also refer to this helpful community guide on [How to download transaction reports on Amazon purchases by year](https://www.amazonforum.com/s/question/0D5at00000UHvv9CAD/how-to-download-transaction-reports-on-amazon-purchases-by-year).
+* **PayPal Statement History**: Download a Standard Transaction CSV via the [PayPal Reports Activity Download Page](https://www.paypal.com/reports/dlog).
+
+### 🛍️ eBay & The GDPR SAR Limitation
+For eBay, the official route to request account data is via a Subject Access Request (GDPR SAR) at the official [eBay SAR Web Portal](https://www.sarweb.ebay.com/sar). However, using the official eBay SAR route is completely impractical for standard budgeting purposes:
+* **Unacceptable Delays**: The official SAR process takes an unacceptable length of time (typically around 10 days) to generate the report.
+* **Not Acceptable Expiration**: Once eBay finally generates the download link, it expires after only 7 days. Because the turnaround time exceeds the validity window of a typical weekly budget reconciliation, relying on this official path is not acceptable.
+* **Recommended Chrome Extension**: To circumvent these limitations, the current approach is to download your purchase history as an `.xlsx` spreadsheet using the third-party Chrome extension [Ebay Purchase History Downloader](https://chromewebstore.google.com/detail/ebay-purchase-history-dow/dhccpfcjgmlajnnoigjhokbfgpaamhpe/). Note that there is currently no Firefox add-on or direct CSV export option available for eBay.
 
 ---
 

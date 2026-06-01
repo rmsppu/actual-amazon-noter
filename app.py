@@ -98,9 +98,12 @@ def process():
     amount_tolerance = request.form.get('amount_tolerance', '')
     fmt = request.form.get('format', 'auto')
 
-    # Save to a temporary file
+    # Save to a temporary file, preserving extension for auto-detection
+    _, ext = os.path.splitext(file.filename)
+    if not ext:
+        ext = '.csv'
     temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, 'uploaded_orders.csv')
+    temp_path = os.path.join(temp_dir, f'uploaded_orders{ext}')
     file.save(temp_path)
 
     try:
@@ -155,8 +158,8 @@ def process():
             print(stderr, file=sys.stderr, flush=True)
 
         # Clean output a bit (e.g. remove full temporary path references)
-        stdout = stdout.replace(temp_path, 'uploaded_orders.csv')
-        stderr = stderr.replace(temp_path, 'uploaded_orders.csv')
+        stdout = stdout.replace(temp_path, file.filename)
+        stderr = stderr.replace(temp_path, file.filename)
 
         return jsonify({
             'success': success,
