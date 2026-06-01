@@ -694,9 +694,25 @@ def match_transactions(
             
             if verify_payee:
                 budget_payee = transaction.get("payee_name") or transaction.get("imported_payee") or ""
-                csv_payee = getattr(amazon, 'payee', '') or getattr(amazon, 'name', '') or getattr(amazon, 'seller', '') or ''
-                if not payee_matches(budget_payee, csv_payee):
-                    continue
+                
+                # Special logic for eBay matching: check if payee contains eBay order ID or is generic eBay
+                if hasattr(amazon, 'seller') and hasattr(amazon, 'order_id'):
+                    budget_payee_lower = budget_payee.lower()
+                    order_id_in_payee = False
+                    if amazon.order_id and amazon.order_id.lower() in budget_payee_lower:
+                        order_id_in_payee = True
+                    
+                    # If payee contains eBay order identifier but doesn't match this record's order ID, reject it
+                    if "ebay o*" in budget_payee_lower or "ebay o" in budget_payee_lower:
+                        if not order_id_in_payee:
+                            continue
+                    
+                    if "ebay" not in budget_payee_lower:
+                        continue
+                else:
+                    csv_payee = getattr(amazon, 'payee', '') or getattr(amazon, 'name', '') or getattr(amazon, 'seller', '') or ''
+                    if not payee_matches(budget_payee, csv_payee):
+                        continue
             
             date_diff = trans_date - amazon.date
             if date_diff.days < -2:
