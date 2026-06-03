@@ -748,6 +748,23 @@
         const daysCard = daysInput.closest('.setting-card');
         const amountCard = amountInput.closest('.setting-card');
         
+        const dryRunToggle = document.getElementById('dryRunToggle');
+        const autoTriggerToggle = document.getElementById('autoTriggerToggle');
+        const autoTriggerCard = autoTriggerToggle.closest('.setting-card');
+        
+        if (dryRunToggle.checked) {
+            autoTriggerToggle.checked = false;
+            autoTriggerToggle.disabled = true;
+            autoTriggerCard.classList.add('disabled');
+        } else {
+            autoTriggerToggle.disabled = false;
+            autoTriggerCard.classList.remove('disabled');
+            const storedAutoTrigger = localStorage.getItem('autoTriggerAi');
+            if (storedAutoTrigger !== null) {
+                autoTriggerToggle.checked = storedAutoTrigger === 'true';
+            }
+        }
+
         if (formatSelect.value === 'auto') {
             daysInput.type = 'text';
             daysInput.value = 'Default';
@@ -783,6 +800,7 @@
     }
 
     formatSelect.addEventListener('change', updateGhostedStates);
+    document.getElementById('dryRunToggle').addEventListener('change', updateGhostedStates);
     // Trigger on load to set initial state
     updateGhostedStates();
 
@@ -805,7 +823,9 @@
     }
     
     autoTriggerToggle.addEventListener('change', () => {
-        localStorage.setItem('autoTriggerAi', autoTriggerToggle.checked);
+        if (!document.getElementById('dryRunToggle').checked) {
+            localStorage.setItem('autoTriggerAi', autoTriggerToggle.checked);
+        }
     });
 
     // Check AI Status
