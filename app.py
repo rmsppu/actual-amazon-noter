@@ -467,6 +467,20 @@ def ai_logs(job_id):
             # Fetch logs
             try:
                 logs_text = core_v1.read_namespaced_pod_log(pod_name, namespace)
+                if isinstance(logs_text, bytes):
+                    logs_text = logs_text.decode('utf-8', errors='replace')
+                elif isinstance(logs_text, str):
+                    if (logs_text.startswith("b'") and logs_text.endswith("'")) or \
+                       (logs_text.startswith('b"') and logs_text.endswith('"')):
+                        try:
+                            import ast
+                            val = ast.literal_eval(logs_text)
+                            if isinstance(val, bytes):
+                                logs_text = val.decode('utf-8', errors='replace')
+                            elif isinstance(val, str):
+                                logs_text = val
+                        except Exception:
+                            pass
             except Exception as e:
                 logs_text = f"Could not retrieve pod logs: {str(e)}"
                 

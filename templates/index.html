@@ -377,6 +377,8 @@
         .log-skip { color: var(--warning); font-weight: 500; }
         .log-error { color: var(--danger); font-weight: 600; }
         .log-info { color: #38bdf8; }
+        .log-breadcrumb { color: var(--text-muted); opacity: 0.65; font-size: 0.8rem; }
+        .log-llm { color: #d946ef; font-weight: 500; }
 
         /* Animations */
         @keyframes fadeInDown {
@@ -450,6 +452,19 @@
 
                 <div class="setting-card">
                     <div>
+                        <div class="setting-title">Post-Process Auto-Trigger</div>
+                        <div class="setting-desc">Automatically run AI classification on successful CSV uploads.</div>
+                    </div>
+                    <div class="switch-container">
+                        <label class="switch">
+                            <input type="checkbox" id="autoTriggerToggle">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setting-card">
+                    <div>
                         <div class="setting-title">File Source Format</div>
                         <div class="setting-desc">Select which format of CSV/XLSX you are uploading.</div>
                     </div>
@@ -475,58 +490,6 @@
                         <div class="setting-desc">Max absolute amount mismatch in currency units (e.g. 1.00 for Amazon, 0.00 for PayPal).</div>
                     </div>
                     <input type="text" id="amountToleranceInput" class="number-input" value="Default" disabled>
-            </div>
-
-            <!-- AI Assistant Integration Card -->
-            <div class="setting-card" id="aiAssistantCard" style="grid-column: 1 / -1; background: rgba(147, 51, 234, 0.04); border: 1px solid rgba(147, 51, 234, 0.12); margin-bottom: 2rem;">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; width: 100%;">
-                    <div style="flex: 1; min-width: 250px;">
-                        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
-                            <span style="font-size: 1.2rem;">🤖</span>
-                            <div class="setting-title" style="font-size: 1.1rem; margin-bottom: 0; background: linear-gradient(135deg, #a78bfa, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">AI Assistant Integration</div>
-                        </div>
-                        <div class="setting-desc" id="aiStatusText" style="font-size: 0.9rem; margin-bottom: 0.5rem; font-family: 'JetBrains Mono', monospace;">
-                            AI Status: Checking integration...
-                        </div>
-                        <div class="setting-desc" style="margin-bottom: 0.75rem;">
-                            Trigger the Gemini-powered transaction classifier on-demand, or configure it to run automatically after uploading.
-                        </div>
-                        
-                        <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
-                            <button type="button" class="btn" id="runAiBtn" style="width: auto; padding: 0.6rem 1.25rem; font-size: 0.9rem; border-radius: 8px; background: linear-gradient(135deg, #9333ea, #3b82f6); margin-top: 0.5rem; box-shadow: 0 4px 10px rgba(147, 51, 234, 0.2);" disabled>
-                                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                    <div class="btn-spinner" id="aiBtnSpinner" style="width: 14px; height: 14px; border-width: 2px;"></div>
-                                    <span id="aiBtnText">Run AI Classifier</span>
-                                </div>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 1rem; padding-top: 0.5rem;">
-                        <div style="display: flex; align-items: center; gap: 0.75rem;">
-                            <label class="switch">
-                                <input type="checkbox" id="autoTriggerToggle">
-                                <span class="slider"></span>
-                            </label>
-                            <div>
-                                <div class="setting-title" style="font-size: 0.9rem; margin-bottom: 0.1rem;">Post-Process Auto-Trigger</div>
-                                <div class="setting-desc" style="font-size: 0.75rem; margin-bottom: 0; max-width: 200px;">Auto-run AI classification on successful CSV uploads.</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- AI Logs Terminal inside the card, collapsible -->
-                <div class="terminal" id="aiTerminal" style="margin-top: 1.5rem; display: none; width: 100%;">
-                    <div class="terminal-header">
-                        <div class="terminal-title">
-                            <div class="terminal-dot running" id="aiTerminalDot"></div>
-                            <span>AI Classification Log Output</span>
-                        </div>
-                    </div>
-                    <div class="terminal-body" style="max-height: 250px; background: #040507;">
-                        <pre id="aiLogContent" style="color: #a7f3d0;"></pre>
-                    </div>
                 </div>
             </div>
 
@@ -560,6 +523,46 @@
             </div>
             <div class="terminal-body">
                 <pre id="logContent">Preparing processor...</pre>
+            </div>
+        </div>
+
+        <!-- AI Assistant Integration Card -->
+        <div class="setting-card" id="aiAssistantCard" style="background: rgba(147, 51, 234, 0.04); border: 1px solid rgba(147, 51, 234, 0.12); margin-top: 2rem;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; width: 100%;">
+                <div style="flex: 1; min-width: 250px;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                        <span style="font-size: 1.2rem;">🤖</span>
+                        <div class="setting-title" style="font-size: 1.1rem; margin-bottom: 0; background: linear-gradient(135deg, #a78bfa, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">AI Assistant Integration</div>
+                    </div>
+                    <div class="setting-desc" id="aiStatusText" style="font-size: 0.9rem; margin-bottom: 0.5rem; font-family: 'JetBrains Mono', monospace;">
+                        AI Status: Checking integration...
+                    </div>
+                    <div class="setting-desc" style="margin-bottom: 0.75rem;">
+                        Trigger the Gemini-powered transaction classifier on-demand.
+                    </div>
+                    
+                    <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
+                        <button type="button" class="btn" id="runAiBtn" style="width: auto; padding: 0.6rem 1.25rem; font-size: 0.9rem; border-radius: 8px; background: linear-gradient(135deg, #9333ea, #3b82f6); margin-top: 0.5rem; box-shadow: 0 4px 10px rgba(147, 51, 234, 0.2);" disabled>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <div class="btn-spinner" id="aiBtnSpinner" style="width: 14px; height: 14px; border-width: 2px;"></div>
+                                <span id="aiBtnText">Run AI Classifier</span>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- AI Logs Terminal inside the card, collapsible -->
+            <div class="terminal" id="aiTerminal" style="margin-top: 1.5rem; display: none; width: 100%;">
+                <div class="terminal-header">
+                    <div class="terminal-title">
+                        <div class="terminal-dot running" id="aiTerminalDot"></div>
+                        <span>AI Classification Log Output</span>
+                    </div>
+                </div>
+                <div class="terminal-body" style="max-height: 250px; background: #040507;">
+                    <pre id="aiLogContent" style="color: #a7f3d0;"></pre>
+                </div>
             </div>
         </div>
     </main>
@@ -684,14 +687,46 @@
         submitBtn.disabled = false;
     }
 
+    function cleanPythonBytesString(str) {
+        if (typeof str !== 'string') return str;
+        let s = str.trim();
+        if ((s.startsWith("b'") && s.endsWith("'")) || (s.startsWith('b"') && s.endsWith('"'))) {
+            s = s.substring(2, s.length - 1);
+            // Replace escaped sequences like \n, \t, \r, \', \", \\
+            s = s.replace(/\\n/g, '\n')
+                 .replace(/\\r/g, '\r')
+                 .replace(/\\t/g, '\t')
+                 .replace(/\\'/g, "'")
+                 .replace(/\\"/g, '"')
+                 .replace(/\\\\/g, '\\');
+        }
+        return s;
+    }
+
     // Color/Style the logs dynamically for premium observability
     function colorizeLogs(text) {
-        return text
-            .replace(/(Matching.*|Processing.*)/gi, '<span class="log-info">$1</span>')
-            .replace(/(Error.*|Failed.*|Exception.*)/gi, '<span class="log-error">$1</span>')
-            .replace(/(Split into.*|Split:.*|Would create.*|Sub \d+.*)/gi, '<span class="log-split">$1</span>')
-            .replace(/(Already split.*|Already processed.*|Already a split.*|Records skipped.*)/gi, '<span class="log-skip">$1</span>')
-            .replace(/(Updated transaction.*|Matches found.*|Transactions split.*)/gi, '<span class="log-match">$1</span>');
+        if (!text) return '';
+        // Escape HTML entities to prevent rendering issues or security vulnerabilities
+        let escaped = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        // Highlight matching/processing/system statements
+        escaped = escaped
+            .replace(/(Matching.*|Processing.*|Application started|Starting classification process|Syncing.*|Got messages.*|Budget downloaded|Bank accounts synced)/gi, '<span class="log-info">$1</span>')
+            .replace(/(Error.*|Failed.*|Exception.*|Could not.*)/gi, '<span class="log-error">$1</span>')
+            .replace(/(Split into.*|Split:.*|Would create.*|Sub \d+.*|Cleaned LLM response.*)/gi, '<span class="log-split">$1</span>')
+            .replace(/(Already split.*|Already processed.*|Already a split.*|Records skipped.*|Ignoring.*|Excluded.*|Already has a category)/gi, '<span class="log-skip">$1</span>')
+            .replace(/(Updated transaction.*|Matches found.*|Transactions split.*|Using existing category.*|Successfully categorized.*)/gi, '<span class="log-match">$1</span>');
+
+        // Style Sentry/Breadcrumb logs specifically to be muted
+        escaped = escaped.replace(/(\[Breadcrumb\].*)/g, '<span class="log-breadcrumb">$1</span>');
+        
+        // Highlight LLM calls
+        escaped = escaped.replace(/(Making LLM request to.*)/g, '<span class="log-llm">$1</span>');
+
+        return escaped;
     }
 
     const formatSelect = document.getElementById('formatSelect');
@@ -844,7 +879,7 @@
                 const data = await response.json();
                 
                 if (data.logs) {
-                    aiLogContent.innerHTML = colorizeLogs(data.logs);
+                    aiLogContent.innerHTML = colorizeLogs(cleanPythonBytesString(data.logs));
                     aiTerminal.querySelector('.terminal-body').scrollTop = aiTerminal.querySelector('.terminal-body').scrollHeight;
                 }
                 
@@ -911,7 +946,7 @@
                 if (data.stdout) out += data.stdout;
                 if (data.stderr) out += '\n--- ERRORS/WARNINGS ---\n' + data.stderr;
                 
-                logContent.innerHTML = colorizeLogs(out || 'Execution completed with no output logs.');
+                logContent.innerHTML = colorizeLogs(cleanPythonBytesString(out) || 'Execution completed with no output logs.');
                 terminalDot.className = 'terminal-dot success';
 
                 // Post-Process Auto-Trigger Cascade (only on execution runs, or dry-run successful too)
