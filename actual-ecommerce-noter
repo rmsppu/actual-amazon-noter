@@ -29,7 +29,7 @@ from typing import Any, Optional
 import requests
 
 
-VERSION = "2.2.0"
+VERSION = "2.2.0-fork.7"
 
 # Constant tags used to identify records already processed
 AMAZON_ORDER_ID_TAG = "#Amazon-Order-ID"
@@ -138,13 +138,13 @@ class AmazonRecord:
             self.shipping_address = ""
         elif record_type == "Refund_Details":
             self.order_id = data.get("Order ID", "")
-            self.amount = self._parse_amount(data.get("Refund Amount", ""))
+            self.amount = -abs(self._parse_amount(data.get("Refund Amount", "")))
             self.date = self._parse_date(data.get("Refund Date", ""))
             self.product_name = data.get("Product Name", "")
             self.shipping_address = ""
         elif record_type == "Digital_Returns":
             self.order_id = data.get("Order ID", "")
-            self.amount = self._parse_amount(data.get("Transaction Amount", ""))
+            self.amount = -abs(self._parse_amount(data.get("Transaction Amount", "")))
             self.date = self._parse_date(data.get("Return Date", ""))
             self.product_name = data.get("Title", "")
             self.shipping_address = ""
@@ -488,7 +488,7 @@ def get_config_value(arg_value: Optional[str], env_name: str, file_path: Optiona
 
 def read_amazon_csv(file_path: str) -> tuple:
     """Read an Amazon CSV file and determine its type."""
-    orders_dict = {}
+    records = []
     record_type = None
     
     with open(file_path, "r", encoding="utf-8-sig") as f:
@@ -522,16 +522,9 @@ def read_amazon_csv(file_path: str) -> tuple:
         
         for row in reader:
             if row:
-                record = AmazonRecord(record_type, row)
-                order_id = record.order_id
-                
-                if order_id not in orders_dict:
-                    orders_dict[order_id] = AmazonOrder()
-                
-                orders_dict[order_id].add_item(record)
+                records.append(AmazonRecord(record_type, row))
     
-    orders = list(orders_dict.values())
-    return record_type, orders
+    return record_type, records
 
 
 def read_paypal_csv(file_path: str, base_currency: str = DEFAULT_BASE_CURRENCY) -> tuple:
@@ -997,9 +990,88 @@ Examples:
         else:
             record_type, records = read_amazon_csv(csv_file)
             all_records.extend(records)
-            print(f"Loaded {len(records)} records from {csv_file} ({record_type})")
+            print(f"Loaded {len(records)} raw records from {csv_file} ({record_type})")
             if detected_format == "auto":
                 detected_format = "amazon"
+                
+    if detected_format == "amazon" and all_records:
+        # Validation: Verify that Refund Details are never processed alone
+        has_refunds = any(r.record_type in ["Refund_Details", "Digital_Returns"] for r in all_records)
+        has_purchases = any(r.record_type in ["Order_History", "Digital_Content_Orders"] for r in all_records)
+        
+        if has_refunds and not has_purchases:
+            print("Error: Amazon Refund Details cannot be processed without the corresponding Order History or Digital Content Orders file.", file=sys.stderr)
+            sys.exit(1)
+            
+        # Index purchase items by Order ID
+        purchases_by_order = {}
+        for r in all_records:
+            if r.record_type in ["Order_History", "Digital_Content_Orders"]:
+                if r.order_id not in purchases_by_order:
+                    purchases_by_order[r.order_id] = []
+                purchases_by_order[r.order_id].append(r)
+                
+        # Group raw purchase records into AmazonOrder objects
+        purchase_orders = {}
+        for r in all_records:
+            if r.record_type in ["Order_History", "Digital_Content_Orders"]:
+                if r.order_id not in purchase_orders:
+                    purchase_orders[r.order_id] = AmazonOrder()
+                purchase_orders[r.order_id].add_item(r)
+                
+        # Group refund records by unique (Order ID, Refund Date, Refund Amount) events to avoid multi-row duplication
+        refund_events = {}
+        for r in all_records:
+            if r.record_type in ["Refund_Details", "Digital_Returns"]:
+                date_key = r.date.date() if r.date else None
+                # Group key uses negative amount
+                amt_key = -abs(r.amount)
+                key = (r.order_id, date_key, amt_key)
+                if key not in refund_events:
+                    refund_events[key] = []
+                refund_events[key].append(r)
+                
+        # Construct refund AmazonOrder objects with resolved product details
+        refund_orders = []
+        for (order_id, date_key, amt_val), r_list in refund_events.items():
+            ref_order = AmazonOrder()
+            ref_order.order_id = order_id
+            ref_order.date = datetime.combine(date_key, datetime.min.time()) if date_key else None
+            ref_order.amount = amt_val # negative
+            ref_order.currency = r_list[0].currency
+            
+            # Cross-reference with order history to retrieve product details
+            if order_id in purchases_by_order:
+                items = purchases_by_order[order_id]
+                if len(items) == 1:
+                    ref_order.product_names = [items[0].product_name]
+                    ref_order.item_amounts = [abs(amt_val)]
+                else:
+                    abs_refund = abs(amt_val)
+                    matched_items = []
+                    for item in items:
+                        if abs(item.amount - abs_refund) < 0.02:
+                            matched_items.append(item)
+                    
+                    if len(matched_items) == 1:
+                        ref_order.product_names = [matched_items[0].product_name]
+                        ref_order.item_amounts = [abs_refund]
+                    else:
+                        total_order_sum = sum(item.amount for item in items)
+                        if abs(total_order_sum - abs_refund) < 0.05:
+                            ref_order.product_names = [item.product_name for item in items]
+                            ref_order.item_amounts = [item.amount for item in items]
+                        else:
+                            candidates_str = "Candidates: " + " | ".join(item.product_name for item in items)
+                            ref_order.product_names = [candidates_str]
+                            ref_order.item_amounts = [abs_refund]
+            else:
+                ref_order.product_names = ["Refund (Order details not found)"]
+                ref_order.item_amounts = [abs(amt_val)]
+                
+            refund_orders.append(ref_order)
+            
+        all_records = list(purchase_orders.values()) + refund_orders
                 
     days_tolerance = args.days
     if detected_format == "paypal" and args.days == DEFAULT_DAYS_TOLERANCE:

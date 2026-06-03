@@ -533,9 +533,9 @@
             <!-- Drag and Drop uploader -->
             <div class="drop-zone" id="dropZone">
                 <div class="drop-zone-icon">📦</div>
-                <div class="drop-zone-text" id="dropZoneText">Drag & Drop CSV or XLSX file here</div>
-                <div class="drop-zone-subtext" id="dropZoneSubtext">Supports Amazon, PayPal, and eBay exports</div>
-                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" style="display: none;">
+                <div class="drop-zone-text" id="dropZoneText">Drag & Drop CSV or XLSX file(s) here</div>
+                <div class="drop-zone-subtext" id="dropZoneSubtext">Supports Amazon (Order History + Refund Details), PayPal, and eBay exports</div>
+                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" multiple style="display: none;">
                 
                 <div class="file-info" id="fileInfo">
                     <span class="file-info-icon">📄</span>
@@ -581,7 +581,7 @@
     const logContent = document.getElementById('logContent');
     const terminalDot = document.getElementById('terminalDot');
 
-    let selectedFile = null;
+    let selectedFiles = [];
     const diagnosticsLink = document.getElementById('diagnosticsLink');
 
     // Dynamically calculate paths based on current window location to ensure perfect Traefik subpath routing
@@ -598,10 +598,10 @@
         }
     });
 
-    // Handle selected file via input
+    // Handle selected files via input
     fileInput.addEventListener('change', (e) => {
         if (fileInput.files.length > 0) {
-            handleFile(fileInput.files[0]);
+            handleFiles(fileInput.files);
         }
     });
 
@@ -617,25 +617,71 @@
         });
     });
 
-    // Drop file
+    // Drop files
     dropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         dropZone.classList.remove('dragover');
         if (e.dataTransfer.files.length > 0) {
-            handleFile(e.dataTransfer.files[0]);
+            handleFiles(e.dataTransfer.files);
         }
     });
 
-    function handleFile(file) {
-        const lowerName = file.name.toLowerCase();
-        if (lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
-            selectedFile = file;
-            fileName.textContent = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
-            fileInfo.style.display = 'flex';
-            submitBtn.disabled = false;
-        } else {
-            alert('Please select a valid CSV or XLSX file.');
+    function validateFiles(files) {
+        let hasRefund = false;
+        let hasPurchase = false;
+        
+        for (const file of files) {
+            const name = file.name.toLowerCase();
+            if (name.includes('refund') || name.includes('return')) {
+                hasRefund = true;
+            } else if (name.includes('order') || name.includes('purchase')) {
+                hasPurchase = true;
+            }
         }
+        
+        if (hasRefund && !hasPurchase) {
+            return {
+                valid: false,
+                error: 'Amazon Refund Details CSV cannot be processed alone; please drag it together with your Amazon Order History CSV.'
+            };
+        }
+        return { valid: true };
+    }
+
+    function handleFiles(filesList) {
+        const files = Array.from(filesList);
+        const validFiles = [];
+        
+        for (const file of files) {
+            const lowerName = file.name.toLowerCase();
+            if (lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+                validFiles.push(file);
+            }
+        }
+        
+        if (validFiles.length === 0) {
+            alert('Please select valid CSV or XLSX files.');
+            return;
+        }
+        
+        const valResult = validateFiles(validFiles);
+        if (!valResult.valid) {
+            alert(valResult.error);
+            selectedFiles = [];
+            fileInfo.style.display = 'none';
+            submitBtn.disabled = true;
+            return;
+        }
+        
+        selectedFiles = validFiles;
+        
+        if (selectedFiles.length === 1) {
+            fileName.textContent = `${selectedFiles[0].name} (${(selectedFiles[0].size / 1024).toFixed(1)} KB)`;
+        } else {
+            fileName.textContent = `${selectedFiles.length} files selected: ` + selectedFiles.map(f => f.name).join(', ');
+        }
+        fileInfo.style.display = 'flex';
+        submitBtn.disabled = false;
     }
 
     // Color/Style the logs dynamically for premium observability
@@ -830,7 +876,7 @@
     // Submit form and request backend processing
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        if (!selectedFile) return;
+        if (selectedFiles.length === 0) return;
 
         // UI State: Processing
         submitBtn.disabled = true;
@@ -843,7 +889,9 @@
         terminalDot.className = 'terminal-dot running';
 
         const formData = new FormData();
-        formData.append('file', selectedFile);
+        selectedFiles.forEach(file => {
+            formData.append('file', file);
+        });
         formData.append('execute', !document.getElementById('dryRunToggle').checked);
         formData.append('force', document.getElementById('forceToggle').checked);
         formData.append('days', document.getElementById('daysInput').value);

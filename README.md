@@ -57,6 +57,9 @@ Due to restrictive platform policies, transaction history exports from major e-c
 ### 💳 Amazon & PayPal Manual Export
 Exporting data from Amazon and PayPal is an unavoidably manual workflow:
 * **Amazon Purchase History**: Download your detailed orders CSV by submitting a data request via the [Amazon Privacy Central Data Request Page](https://www.amazon.co.uk/hz/privacy-central/data-requests/preview.html). You can also refer to this helpful community guide on [How to download transaction reports on Amazon purchases by year](https://www.amazonforum.com/s/question/0D5at00000UHvv9CAD/how-to-download-transaction-reports-on-amazon-purchases-by-year).
+* **Amazon Refund Details**: Download your refund details CSV (labeled `Refund_Details.csv`) through the same Amazon data request page.
+  > [!IMPORTANT]
+  > **Refund Matching Requirement**: Refund details exports *cannot* be processed alone because they lack product names. The uploader requires your `Order_History.csv` to cross-reference order IDs and resolve product names/splits. Always upload or pass **both files together** (e.g. dragging both into the drop zone in the Web GUI, or passing both to the CLI).
 * **PayPal Statement History**: Download a Standard Transaction CSV via the [PayPal Reports Activity Download Page](https://www.paypal.com/reports/dlog).
 
 ### 🛍️ eBay & The GDPR SAR Limitation

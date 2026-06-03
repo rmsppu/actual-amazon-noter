@@ -92,8 +92,8 @@ def process():
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
     
-    file = request.files['file']
-    if file.filename == '':
+    uploaded_files = request.files.getlist('file')
+    if not uploaded_files or uploaded_files[0].filename == '':
         return jsonify({'error': 'No file selected'}), 400
 
     execute = request.form.get('execute') == 'true'
@@ -102,15 +102,47 @@ def process():
     amount_tolerance = request.form.get('amount_tolerance', '')
     fmt = request.form.get('format', 'auto')
 
-    # Save to a temporary file, preserving extension for auto-detection
-    _, ext = os.path.splitext(file.filename)
-    if not ext:
-        ext = '.csv'
+    # Save to unique temporary files to prevent name collisions
     temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, f'uploaded_orders{ext}')
-    file.save(temp_path)
-
+    temp_files = []
+    
     try:
+        for file in uploaded_files:
+            base, ext = os.path.splitext(os.path.basename(file.filename))
+            if not ext:
+                ext = '.csv'
+            # Create a unique temp file name using uuid
+            temp_path = os.path.join(temp_dir, f'uploaded_{uuid.uuid4().hex}_{base}{ext}')
+            file.save(temp_path)
+            temp_files.append((temp_path, file.filename))
+            
+        # Validation: Verify that refund details are not uploaded alone
+        has_refunds = False
+        has_purchases = False
+        
+        for temp_path, orig_filename in temp_files:
+            lower_name = orig_filename.lower()
+            # 1. Filename heuristic
+            if "refund" in lower_name or "return" in lower_name:
+                has_refunds = True
+            elif "order" in lower_name or "purchase" in lower_name:
+                has_purchases = True
+                
+            # 2. Header analysis for CSV files
+            if temp_path.lower().endswith(".csv"):
+                try:
+                    with open(temp_path, "r", encoding="utf-8-sig") as f:
+                        header = f.readline()
+                        if "Refund Amount" in header or "Refund Date" in header:
+                            has_refunds = True
+                        elif "Total Amount" in header or "Order Date" in header:
+                            has_purchases = True
+                except Exception:
+                    pass
+                    
+        if has_refunds and not has_purchases:
+            return jsonify({'error': 'Amazon Refund Details CSV cannot be uploaded alone; please also include your Amazon Order History CSV.'}), 400
+
         # Prepare subprocess environment, inheriting from current environment
         env = os.environ.copy()
         
@@ -138,7 +170,8 @@ def process():
             except ValueError:
                 pass
         cmd.extend(['--format', fmt])
-        cmd.append(temp_path)
+        # Append all temp paths
+        cmd.extend([tf[0] for tf in temp_files])
 
         # Run subprocess
         result = subprocess.run(
@@ -162,8 +195,9 @@ def process():
             print(stderr, file=sys.stderr, flush=True)
 
         # Clean output a bit (e.g. remove full temporary path references)
-        stdout = stdout.replace(temp_path, file.filename)
-        stderr = stderr.replace(temp_path, file.filename)
+        for temp_path, orig_filename in temp_files:
+            stdout = stdout.replace(temp_path, orig_filename)
+            stderr = stderr.replace(temp_path, orig_filename)
 
         return jsonify({
             'success': success,
@@ -179,8 +213,12 @@ def process():
         return jsonify({'error': f'Execution failed: {str(e)}'}), 500
     finally:
         # Ensure temporary file cleanup
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        for temp_path, _ in temp_files:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
 
 # --- AI Assistant Integration Endpoints ---
 

@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="actual-ecommerce-noter",
-    version="2.2.0",
+    version="2.2.0-fork.7",
     description="Update Actual Budget transaction notes with Amazon and PayPal order details",
     long_description="Update Actual Budget transaction notes with Amazon and PayPal order details",
     long_description_content_type="text/plain",
