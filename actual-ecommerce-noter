@@ -166,6 +166,8 @@ class AmazonRecord:
             return None
         # Try common date formats
         formats = [
+            "%Y-%m-%dT%H:%M:%S.%fZ", # ISO 8601 with milliseconds and Z
+            "%Y-%m-%dT%H:%M:%S.%f",  # ISO 8601 with milliseconds
             "%Y-%m-%dT%H:%M:%SZ",  # ISO 8601
             "%Y-%m-%dT%H:%M:%S",
             "%Y-%m-%d",
@@ -1139,6 +1141,11 @@ Examples:
         
     purchase_records = [r for r in all_records if r.amount > 0]
     refund_records = [r for r in all_records if r.amount < 0]
+    
+    # Sort transactions and CSV records chronologically by date to ensure deterministic matching
+    transactions.sort(key=lambda t: t.get("date", ""))
+    purchase_records.sort(key=lambda r: r.date or datetime.min)
+    refund_records.sort(key=lambda r: r.date or datetime.min)
     
     purchase_matches = match_transactions(transactions, purchase_records, days_tolerance, amount_tolerance, verify_payee=(detected_format in ["paypal", "ebay"]), is_income=False)
     refund_matches = match_transactions(transactions, refund_records, days_tolerance, amount_tolerance, verify_payee=(detected_format in ["paypal", "ebay"]), is_income=True)
