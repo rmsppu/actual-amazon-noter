@@ -304,7 +304,7 @@ def ai_classify():
             owner_reference = client.V1OwnerReference(
                 api_version=cj.api_version or "batch/v1",
                 block_owner_deletion=True,
-                controller=True,
+                controller=False,
                 kind=cj.kind or "CronJob",
                 name=cj.metadata.name,
                 uid=cj.metadata.uid
