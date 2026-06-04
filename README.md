@@ -7,6 +7,9 @@ A companion utility and web companion for [Actual Budget](https://actualbudget.o
 
 ---
 
+<img width="900" height="1207" alt="image" src="https://github.com/user-attachments/assets/0c3f6bed-43d4-4f31-b8e8-888f45f50ae2" />
+
+
 ## Table of Contents
 
 * [Key Features](#key-features)
