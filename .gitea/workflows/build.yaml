@@ -18,7 +18,7 @@ jobs:
           REGISTRY_DOMAIN=$(echo "$GITHUB_SERVER_URL" | cut -d'/' -f3)
           echo "Logging in to registry: $REGISTRY_DOMAIN"
           
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY_DOMAIN" -u gitea-admin --password-stdin
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login "$REGISTRY_DOMAIN" -u gitea-admin --password-stdin
 
           IMAGE_TAG="$REGISTRY_DOMAIN/gitea-admin/actual-ecommerce-noter:latest"
           
