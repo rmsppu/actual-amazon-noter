@@ -1,0 +1,26 @@
+name: Build and Push Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in and Push Image
+        run: |
+          REGISTRY_DOMAIN=$(echo "$GITHUB_SERVER_URL" | cut -d'/' -f3)
+          echo "Logging in to registry: $REGISTRY_DOMAIN"
+          
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY_DOMAIN" -u gitea-admin --password-stdin
+
+          IMAGE_TAG="$REGISTRY_DOMAIN/gitea-admin/actual-ecommerce-noter:latest"
+          
+          docker build -t "$IMAGE_TAG" .
+          docker push "$IMAGE_TAG"
