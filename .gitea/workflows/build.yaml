@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - master
+    tags:
+      - '*'
 
 jobs:
   build-and-push:
@@ -20,7 +22,31 @@ jobs:
           
           echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login "$REGISTRY_DOMAIN" -u gitea-admin --password-stdin
 
-          IMAGE_TAG="$REGISTRY_DOMAIN/gitea-admin/actual-ecommerce-noter:latest"
+          IMAGE_BASE="$REGISTRY_DOMAIN/gitea-admin/actual-ecommerce-noter"
           
-          docker build -t "$IMAGE_TAG" .
-          docker push "$IMAGE_TAG"
+          # Build with a temp tag
+          docker build -t "$IMAGE_BASE:temp" .
+
+          # Determine tags to push
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "Triggered by tag: $GITHUB_REF_NAME"
+            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$GITHUB_REF_NAME"
+            docker push "$IMAGE_BASE:$GITHUB_REF_NAME"
+            
+            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:latest"
+            docker push "$IMAGE_BASE:latest"
+          else
+            echo "Triggered by branch: $GITHUB_REF_NAME"
+            SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$SHORT_SHA"
+            docker push "$IMAGE_BASE:$SHORT_SHA"
+            
+            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:latest"
+            docker push "$IMAGE_BASE:latest"
+          fi
+
+      - name: Link Package to Repository
+        run: |
+          curl -k -s -X POST \
+            -u "gitea-admin:${{ secrets.REGISTRY_PASSWORD }}" \
+            "http://gitea-http.gitea.svc.cluster.local:3000/api/v1/packages/gitea-admin/container/actual-ecommerce-noter/-/link/actual-ecommerce-noter"
