@@ -40,12 +40,23 @@ jobs:
           docker push "$IMAGE_BASE:latest"
           echo "Pushed: $IMAGE_BASE:latest"
 
-          # Push all Git tags that point at this commit
+          # If triggered by a tag push, push that tag
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "Triggered by tag push: $GITHUB_REF_NAME"
+            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$GITHUB_REF_NAME"
+            docker push "$IMAGE_BASE:$GITHUB_REF_NAME"
+            echo "Pushed: $IMAGE_BASE:$GITHUB_REF_NAME"
+          fi
+
+          # Also check if there are any Git tags pointing at this commit
+          git fetch --tags || true
           for TAG in $(git tag --points-at HEAD 2>/dev/null); do
-            echo "Found Git tag at HEAD: $TAG"
-            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$TAG"
-            docker push "$IMAGE_BASE:$TAG"
-            echo "Pushed: $IMAGE_BASE:$TAG"
+            if [ "$TAG" != "$GITHUB_REF_NAME" ]; then
+              echo "Found Git tag at HEAD: $TAG"
+              docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$TAG"
+              docker push "$IMAGE_BASE:$TAG"
+              echo "Pushed: $IMAGE_BASE:$TAG"
+            fi
           done
 
       - name: Link Package to Repository
