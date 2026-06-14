@@ -14,36 +14,39 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Log in and Push Image
         run: |
           REGISTRY_DOMAIN=$(echo "$GITHUB_SERVER_URL" | cut -d'/' -f3)
           echo "Logging in to registry: $REGISTRY_DOMAIN"
-          
+
           echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login "$REGISTRY_DOMAIN" -u gitea-admin --password-stdin
 
           IMAGE_BASE="$REGISTRY_DOMAIN/gitea-admin/actual-ecommerce-noter"
-          
+
           # Build with a temp tag
           docker build -t "$IMAGE_BASE:temp" .
 
-          # Determine tags to push
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "Triggered by tag: $GITHUB_REF_NAME"
-            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$GITHUB_REF_NAME"
-            docker push "$IMAGE_BASE:$GITHUB_REF_NAME"
-            
-            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:latest"
-            docker push "$IMAGE_BASE:latest"
-          else
-            echo "Triggered by branch: $GITHUB_REF_NAME"
-            SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
-            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$SHORT_SHA"
-            docker push "$IMAGE_BASE:$SHORT_SHA"
-            
-            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:latest"
-            docker push "$IMAGE_BASE:latest"
-          fi
+          # Always push commit SHA tag
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$SHORT_SHA"
+          docker push "$IMAGE_BASE:$SHORT_SHA"
+          echo "Pushed: $IMAGE_BASE:$SHORT_SHA"
+
+          # Always push latest
+          docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:latest"
+          docker push "$IMAGE_BASE:latest"
+          echo "Pushed: $IMAGE_BASE:latest"
+
+          # Push all Git tags that point at this commit
+          for TAG in $(git tag --points-at HEAD 2>/dev/null); do
+            echo "Found Git tag at HEAD: $TAG"
+            docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$TAG"
+            docker push "$IMAGE_BASE:$TAG"
+            echo "Pushed: $IMAGE_BASE:$TAG"
+          done
 
       - name: Link Package to Repository
         run: |
