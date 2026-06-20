@@ -26,11 +26,12 @@ jobs:
 
           IMAGE_BASE="$REGISTRY_DOMAIN/gitea-admin/actual-ecommerce-noter"
 
-          # Build with a temp tag
-          docker build -t "$IMAGE_BASE:temp" .
-
           # Always push commit SHA tag
           SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+
+          # Build with a temp tag
+          docker build --build-arg COMMIT_HASH="$SHORT_SHA" -t "$IMAGE_BASE:temp" .
+          
           docker tag "$IMAGE_BASE:temp" "$IMAGE_BASE:$SHORT_SHA"
           docker push "$IMAGE_BASE:$SHORT_SHA"
           echo "Pushed: $IMAGE_BASE:$SHORT_SHA"

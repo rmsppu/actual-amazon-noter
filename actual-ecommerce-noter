@@ -70,6 +70,7 @@ class AmazonOrder:
         self.item_amounts = []   # List of individual item amounts
         self.shipping_address = ""
         self.currency = ""
+        self.payment_methods = set()
     
     def add_item(self, record: 'AmazonRecord'):
         """Add an item to this order"""
@@ -83,12 +84,17 @@ class AmazonOrder:
         if record.product_name:
             self.product_names.append(record.product_name)
         self.item_amounts.append(record.amount)
+        
+        payment_method = getattr(record, "payment_method", "")
+        if payment_method:
+            self.payment_methods.add(payment_method)
     
     def get_tags(self) -> list:
         """Get tags to add to transaction notes"""
-        tags = [AMAZON_ORDER_ID_TAG]
-        if self.order_id:
-            tags.append(self.order_id)
+        tags = []
+        order_ids = [oid.strip() for oid in self.order_id.split(";")] if self.order_id else []
+        for oid in order_ids:
+            tags.extend([AMAZON_ORDER_ID_TAG, oid])
         
         if self.date:
             date_str = self.date.strftime("%m-%d-%Y")
@@ -122,6 +128,7 @@ class AmazonRecord:
         self.record_type = record_type
         self.data = data
         self.currency = data.get("Currency", DEFAULT_BASE_CURRENCY)
+        self.payment_method = ""
         
         # Extract relevant fields based on record type
         if record_type == "Order_History":
@@ -130,6 +137,7 @@ class AmazonRecord:
             self.date = self._parse_date(data.get("Order Date", ""))
             self.product_name = data.get("Product Name", "")
             self.shipping_address = data.get("Shipping Address", "")
+            self.payment_method = data.get("Payment Method Type", data.get("Payment Instrument Type", data.get("Payment Information", ""))) or ""
         elif record_type == "Digital_Content_Orders":
             self.order_id = data.get("Order ID", "")
             self.amount = self._parse_amount(data.get("Transaction Amount", ""))
@@ -641,9 +649,14 @@ def match_transactions(
     is_income: bool = False
 ) -> list:
     """Match Actual Budget transactions with aggregated orders (Amazon, PayPal or eBay)"""
+    from itertools import combinations
+    
     matches = []
     used_amazon = set()
-    for transaction in transactions:
+    used_transactions = set()
+    
+    # Phase 1: Standard 1-to-1 exact amount matching
+    for tx_idx, transaction in enumerate(transactions):
         amount = transaction.get("amount", 0)
         
         if is_income:
@@ -722,8 +735,113 @@ def match_transactions(
             
             matches.append((transaction, amazon))
             used_amazon.add(i)
+            used_transactions.add(tx_idx)
             break
             
+    # Phase 2: Amazon-specific matching (Consolidated Charges and Split Gift Card Payments)
+    if not verify_payee:
+        for tx_idx, transaction in enumerate(transactions):
+            if tx_idx in used_transactions:
+                continue
+                
+            amount = transaction.get("amount", 0)
+            if is_income:
+                if amount <= 0:
+                    continue
+            else:
+                if amount >= 0:
+                    continue
+                    
+            trans_date_str = transaction.get("date", "")
+            if not trans_date_str:
+                continue
+                
+            trans_date = None
+            for fmt in ["%Y-%m-%d", "%m-%d-%Y", "%m/%d/%Y"]:
+                try:
+                    trans_date = datetime.strptime(trans_date_str.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+            if not trans_date:
+                continue
+                
+            # Gather matching candidates in date range
+            candidates = []
+            for i, amazon in enumerate(amazon_records):
+                if i in used_amazon:
+                    continue
+                if not amazon.date:
+                    continue
+                    
+                # Consolidated date window: allow a few days extra lag for consolidated shipping
+                date_diff = (trans_date - amazon.date).days
+                if -2 <= date_diff <= days_tolerance + 5:
+                    amazon_amount_cents = int(round(amazon.amount * 100))
+                    if amount < 0 and amazon_amount_cents > 0:
+                        candidates.append((i, amazon))
+                    elif amount > 0 and amazon_amount_cents < 0:
+                        candidates.append((i, amazon))
+                        
+            # Try combinations for consolidated charges (sizes 2 to 4)
+            found_comb = None
+            for r in range(2, min(5, len(candidates) + 1)):
+                for comb in combinations(candidates, r):
+                    comb_sum = sum(int(round(c[1].amount * 100)) for c in comb)
+                    if abs(abs(amount) - abs(comb_sum)) <= amount_tolerance:
+                        found_comb = comb
+                        break
+                if found_comb:
+                    break
+                    
+            if found_comb:
+                matched_indices = [c[0] for c in found_comb]
+                matched_orders = [c[1] for c in found_comb]
+                
+                # Consolidate multiple orders into one virtual order
+                virtual_order = AmazonOrder()
+                virtual_order.order_id = ";".join(sorted(list(set(o.order_id for o in matched_orders))))
+                virtual_order.date = max(o.date for o in matched_orders)
+                virtual_order.shipping_address = matched_orders[0].shipping_address
+                virtual_order.currency = matched_orders[0].currency
+                
+                for o in matched_orders:
+                    virtual_order.amount += o.amount
+                    virtual_order.product_names.extend(o.product_names)
+                    virtual_order.item_amounts.extend(o.item_amounts)
+                    if hasattr(o, 'payment_methods'):
+                        virtual_order.payment_methods.update(o.payment_methods)
+                        
+                matches.append((transaction, virtual_order))
+                for idx in matched_indices:
+                    used_amazon.add(idx)
+                used_transactions.add(tx_idx)
+                continue
+                
+            # Check for split payment (Gift Card) if not consolidated
+            split_match = None
+            for i, amazon in enumerate(amazon_records):
+                if i in used_amazon:
+                    continue
+                if not amazon.date:
+                    continue
+                    
+                date_diff = (trans_date - amazon.date).days
+                if -2 <= date_diff <= days_tolerance + 5:
+                    payment_str = " ".join(getattr(amazon, 'payment_methods', [])).lower()
+                    if "gift" in payment_str or "certificate" in payment_str:
+                        amazon_amount_cents = int(round(amazon.amount * 100))
+                        # Order total in CSV must be greater than card charge
+                        if abs(amazon_amount_cents) > abs(amount) + amount_tolerance:
+                            split_match = amazon
+                            matched_idx = i
+                            break
+                            
+            if split_match:
+                matches.append((transaction, split_match))
+                used_amazon.add(matched_idx)
+                used_transactions.add(tx_idx)
+                
     return matches
 
 
@@ -1189,7 +1307,11 @@ Examples:
                     parent_amount = transaction.get("amount", 0)
                     sub_sum = sum(s["amount"] for s in splits_preview)
                     if sub_sum != parent_amount:
-                        splits_preview[-1]["amount"] += (parent_amount - sub_sum)
+                        diff = parent_amount - sub_sum
+                        if abs(diff) <= 100:
+                            splits_preview[-1]["amount"] += diff
+                        else:
+                            splits_preview.append({"amount": diff, "notes": "Amazon Gift Card/Consolidated Adjustment"})
                     ccy = getattr(record, 'currency', DEFAULT_BASE_CURRENCY)
                     print(f"  SPLIT: Would create {len(splits_preview)} sub-transactions:")
                     for idx, sp in enumerate(splits_preview):
@@ -1225,7 +1347,11 @@ Examples:
                         parent_amount = transaction.get("amount", 0)
                         sub_sum = sum(s["amount"] for s in new_amounts)
                         if sub_sum != parent_amount:
-                            new_amounts[-1]["amount"] += (parent_amount - sub_sum)
+                            diff = parent_amount - sub_sum
+                            if abs(diff) <= 100:
+                                new_amounts[-1]["amount"] += diff
+                            else:
+                                new_amounts.append({"amount": diff, "notes": "Amazon Gift Card/Consolidated Adjustment"})
                             
                         for i, child in enumerate(existing_children):
                             if i < len(new_amounts):
@@ -1252,7 +1378,11 @@ Examples:
                         parent_amount = transaction.get("amount", 0)
                         sub_sum = sum(s["amount"] for s in splits)
                         if sub_sum != parent_amount:
-                            splits[-1]["amount"] += (parent_amount - sub_sum)
+                            diff = parent_amount - sub_sum
+                            if abs(diff) <= 100:
+                                splits[-1]["amount"] += diff
+                            else:
+                                splits.append({"amount": diff, "notes": "Amazon Gift Card/Consolidated Adjustment"})
                             
                         try:
                             api.split_transaction(transaction["id"], account_id, trans_date, payee_id, splits)
