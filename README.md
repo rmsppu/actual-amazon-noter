@@ -97,10 +97,17 @@ Different e-commerce platforms necessitate distinct matching strictness:
   - The tool checks **both** the resolved payee entity name (`payee_name`) and the raw imported bank payee string (`imported_payee`) when filtering and matching transactions.
   - As long as *either* the renamed payee name or the raw imported payee name contains the search keywords (e.g. `paypal`, `ebay`, `amazon`, `amz`), the transaction will be successfully retrieved and processed.
   - > [!WARNING]
-  > **Renaming to Completely Different Names**: If you use Actual Budget rules to rename a payee to a completely different term (e.g. renaming a transaction from `PAYPAL *LEBARA` to `Phone Bill` or `Monthly Subscriptions`), the **Payee String Validation** checks will fail because there is no keyword overlap (`Phone Bill` does not match `LEBARA` in the CSV). 
-  > To ensure successful matches:
-  >   1. Ensure renamed payee names still retain a core merchant keyword (e.g. `Lebara Mobile` is fine).
-  >   2. Or do not run payee-renaming rules on e-commerce transactions before they are matched by this noter utility.
+  - > **Renaming to Completely Different Names**: If you use Actual Budget rules to rename a payee to a completely different term (e.g. renaming a transaction from `PAYPAL *LEBARA` to `Phone Bill` or `Monthly Subscriptions`), the **Payee String Validation** checks will fail because there is no keyword overlap (`Phone Bill` does not match `LEBARA` in the CSV). 
+  - > To ensure successful matches:
+  - >   1. Ensure renamed payee names still retain a core merchant keyword (e.g. `Lebara Mobile` is fine).
+  - >   2. Or do not run payee-renaming rules on e-commerce transactions before they are matched by this noter utility.
+
+### Ambiguous Amazon Payments: Consolidated Charges & Gift Card Splits
+Amazon often processes payments in ways that create discrepancies between credit card statements and CSV order files. The matching engine automatically resolves these ambiguities:
+- **Consolidated Charges Matcher**: Amazon frequently groups multiple separate shipments or orders processed on the same day into a single credit card transaction. The noter automatically groups unmatched transactions and evaluates combinations of 2-4 shipments (within a ±5-day window) to find subsets that sum to the exact card charge amount.
+- **Split Gift Card Payments**: For orders paid partially using Amazon Gift Cards or promotional credits, the card statement records only the remaining balance. The matcher automatically pairs these by identifying orders whose CSV total is greater than the card charge, verifying that the payment methods include both a Gift Card and credit card.
+- **Balancing Split Adjustments**: To keep your category spending and product history 100% accurate, the noter splits the transaction using the **full product prices** from the CSV, and automatically appends a balancing sub-transaction (e.g. positive offset for purchases, negative for refunds) labeled `"Amazon Gift Card/Consolidated Adjustment"`.
+- **Digital Subscription Exclusion**: To maintain clean category mapping, digital subscriptions (e.g. `Amazon Music`, `Amazon Prime`, `Audible`, `Kindle`, `Amazon Video`) are explicitly excluded from physical shopping matching to prevent false matches.
 
 ---
 
@@ -364,6 +371,12 @@ spec:
 * **Payee-Keyword Correlation**: Extracts and matches payee keywords to prevent cross-matching close amounts on adjacent dates (e.g. Roblox vs Lebara).
 * **Configurable Amount Tolerance**: Exposes amount tolerance on both the CLI (`--amount-tolerance`) and GUI card.
 * **Responsive ACTUAL Theme**: Modern, high-performance UI tailored specifically to Actual Budget's deep-navy and violet design colors.
+
+### Consolidated Charges & Gift Card Splits (v2.2.0-fork.10)
+* **Consolidated Charges Resolver**: Automatically matches single credit card transactions representing multiple shipments processed on the same day by generating and evaluating combinations of 2-4 shipments (within a ±5-day window).
+* **Gift Card & Split Payment Splits**: Automatically matches orders paid with a combination of Gift Card and credit card (where the bank charge is lower than the CSV order total).
+* **Balancing Split Adjustments**: Preserves 100% accurate category spending by itemizing splits at their full product prices and appending a balancing sub-transaction (e.g., negative adjustment for purchases) labeled `"Amazon Gift Card/Consolidated Adjustment"`.
+* **Digital Subscription Exclusions**: Prevents false matches by explicitly ignoring digital subscription payees (such as `Amazon Music`, `Amazon Prime`, `Audible`, `Kindle`, `Amazon Video`) from physical order history matching.
 
 ---
 

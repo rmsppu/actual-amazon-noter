@@ -1248,14 +1248,17 @@ Examples:
     else:
         search_lower = "amazon"
         search_lower2 = "amz"
-        transactions = [
-            t for t in all_transactions
-            if search_lower in (t.get("payee_name") or "").lower() or
-               search_lower in (t.get("imported_payee") or "").lower() or
-               search_lower2 in (t.get("payee_name") or "").lower() or
-               search_lower2 in (t.get("imported_payee") or "").lower()
-        ]
-        print(f"Found {len(transactions)} transactions with 'Amazon' in payee")
+        transactions = []
+        for t in all_transactions:
+            payee = (t.get("payee_name") or "").lower()
+            imp_payee = (t.get("imported_payee") or "").lower()
+            if (search_lower in payee or search_lower in imp_payee or
+                search_lower2 in payee or search_lower2 in imp_payee):
+                # Ignore digital subscriptions
+                if any(term in payee or term in imp_payee for term in ["prime", "music", "audible", "kindle", "video", "amzn.co.uk/pm", "amznpm"]):
+                    continue
+                transactions.append(t)
+        print(f"Found {len(transactions)} transactions with 'Amazon' in payee (excluding digital subscriptions)")
         
     purchase_records = [r for r in all_records if r.amount > 0]
     refund_records = [r for r in all_records if r.amount < 0]
