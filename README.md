@@ -92,7 +92,15 @@ The tool automatically shifts its matching date tolerance to 7 days when the Pay
 Different e-commerce platforms necessitate distinct matching strictness:
 - **Amazon (Default: £1.00 / 100 cents)**: Amazon orders are often split dynamically into multiple sub-shipments (which clear the bank as separate, minor charge adjustments) or include additional local taxes/shipping charges. A higher amount tolerance of up to £1.00 allows matching these split charges with the parent order.
 - **PayPal (Default: £0.00 / 0 cents)**: PayPal operates on exact passthrough bank settlement amounts. Because bank statement debits align exactly with the PayPal ledger transaction, any amount variance represents a distinct transaction. The tool enforces a strict **£0.00 amount tolerance** for PayPal matches, completely eliminating false-positive subscription mappings.
-- **Payee String Validation**: For PayPal transactions, the tool extracts alphanumeric keywords from the budget transaction payee and correlates them against the PayPal CSV's merchant Name (ignoring generic words like *PayPal*, *payment*, *ltd*). Specific merchant codes (e.g. `ROBLOX` vs `LEBARA`) are strictly segregated, preventing cross-matching (swapping) of near-identical small amounts on close dates.
+- **Payee String Validation**: For PayPal and eBay transactions, the tool extracts alphanumeric keywords from the budget transaction payee and correlates them against the CSV/XLSX merchant or seller name (ignoring generic words like *PayPal*, *payment*, *ltd*, *ebay*). Specific merchant codes (e.g. `ROBLOX` vs `LEBARA`) are strictly segregated, preventing cross-matching (swapping) of near-identical small amounts on close dates.
+- **Payee Renaming & Mappings**:
+  - The tool checks **both** the resolved payee entity name (`payee_name`) and the raw imported bank payee string (`imported_payee`) when filtering and matching transactions.
+  - As long as *either* the renamed payee name or the raw imported payee name contains the search keywords (e.g. `paypal`, `ebay`, `amazon`, `amz`), the transaction will be successfully retrieved and processed.
+  - > [!WARNING]
+  > **Renaming to Completely Different Names**: If you use Actual Budget rules to rename a payee to a completely different term (e.g. renaming a transaction from `PAYPAL *LEBARA` to `Phone Bill` or `Monthly Subscriptions`), the **Payee String Validation** checks will fail because there is no keyword overlap (`Phone Bill` does not match `LEBARA` in the CSV). 
+  > To ensure successful matches:
+  >   1. Ensure renamed payee names still retain a core merchant keyword (e.g. `Lebara Mobile` is fine).
+  >   2. Or do not run payee-renaming rules on e-commerce transactions before they are matched by this noter utility.
 
 ---
 

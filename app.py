@@ -87,6 +87,76 @@ def diagnostics():
         }), 500
 
 
+# --- Asynchronous Noter execution cache ---
+noter_jobs = {}
+noter_jobs_lock = threading.Lock()
+
+def execute_noter_async(job_id, cmd, env, temp_files):
+    cwd = os.path.dirname(os.path.abspath(__file__))
+    
+    with noter_jobs_lock:
+        # Prevent memory leaks by capping the cache size at 50 jobs
+        if len(noter_jobs) >= 50:
+            keys_to_remove = list(noter_jobs.keys())[:10]
+            for k in keys_to_remove:
+                noter_jobs.pop(k, None)
+                
+        noter_jobs[job_id] = {
+            "status": "running",
+            "logs": "Starting processing job...\n",
+            "returncode": None
+        }
+        
+    try:
+        # Spawn the subprocess
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            cwd=cwd,
+            bufsize=1
+        )
+        
+        # Read output line by line as it is produced
+        for line in iter(process.stdout.readline, ''):
+            cleaned_line = line
+            for temp_path, orig_filename in temp_files:
+                cleaned_line = cleaned_line.replace(temp_path, orig_filename)
+                
+            with noter_jobs_lock:
+                noter_jobs[job_id]["logs"] += cleaned_line
+                
+        process.stdout.close()
+        returncode = process.wait()
+        
+        with noter_jobs_lock:
+            noter_jobs[job_id]["returncode"] = returncode
+            if returncode == 0:
+                noter_jobs[job_id]["status"] = "success"
+                print(f"Noter job {job_id} succeeded", flush=True)
+            else:
+                noter_jobs[job_id]["status"] = "failed"
+                print(f"Noter job {job_id} failed with return code {returncode}", file=sys.stderr, flush=True)
+                
+    except Exception as e:
+        error_msg = f"ERROR: Execution failed: {str(e)}\n{traceback.format_exc()}"
+        print(f"Noter job {job_id} exception: {str(e)}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        with noter_jobs_lock:
+            noter_jobs[job_id]["status"] = "failed"
+            noter_jobs[job_id]["logs"] += error_msg
+    finally:
+        # Clean up temporary files
+        for temp_path, _ in temp_files:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+
 @app.route('/process', methods=['POST'])
 def process():
     if 'file' not in request.files:
@@ -141,13 +211,20 @@ def process():
                     pass
                     
         if has_refunds and not has_purchases:
+            # Clean up temp files before returning
+            for temp_path, _ in temp_files:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
             return jsonify({'error': 'Amazon Refund Details CSV cannot be uploaded alone; please also include your Amazon Order History CSV.'}), 400
 
         # Prepare subprocess environment, inheriting from current environment
         env = os.environ.copy()
         
-        # Build command
-        cmd = ['python3', 'actual-ecommerce-noter']
+        # Build command with -u flag for unbuffered output
+        cmd = ['python3', '-u', 'actual-ecommerce-noter']
         if execute:
             cmd.append('--execute')
         else:
@@ -173,52 +250,48 @@ def process():
         # Append all temp paths
         cmd.extend([tf[0] for tf in temp_files])
 
-        # Run subprocess
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=os.path.dirname(os.path.abspath(__file__))
+        # Generate unique job ID
+        job_id = f"noter-{uuid.uuid4().hex[:8]}"
+        
+        # Start async processing thread
+        thread = threading.Thread(
+            target=execute_noter_async,
+            args=(job_id, cmd, env, temp_files)
         )
-
-        stdout = result.stdout
-        stderr = result.stderr
-        success = result.returncode == 0
-
-        # Forward subprocess output to container logs for real-time observability
-        if stdout:
-            print("--- NOTER STDOUT ---", flush=True)
-            print(stdout, flush=True)
-        if stderr:
-            print("--- NOTER STDERR ---", file=sys.stderr, flush=True)
-            print(stderr, file=sys.stderr, flush=True)
-
-        # Clean output a bit (e.g. remove full temporary path references)
-        for temp_path, orig_filename in temp_files:
-            stdout = stdout.replace(temp_path, orig_filename)
-            stderr = stderr.replace(temp_path, orig_filename)
-
+        thread.daemon = True
+        thread.start()
+        
         return jsonify({
-            'success': success,
-            'stdout': stdout,
-            'stderr': stderr,
-            'returncode': result.returncode
+            'success': True,
+            'job_id': job_id
         })
 
     except Exception as e:
-        print(f"ERROR: Execution failed: {str(e)}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.stderr.flush()
-        return jsonify({'error': f'Execution failed: {str(e)}'}), 500
-    finally:
-        # Ensure temporary file cleanup
+        # Clean up temp files on error
         for temp_path, _ in temp_files:
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except Exception:
                     pass
+        print(f"ERROR: Execution failed: {str(e)}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        return jsonify({'error': f'Execution failed: {str(e)}'}), 500
+
+
+@app.route('/process/status/<job_id>')
+def process_status(job_id):
+    with noter_jobs_lock:
+        job = noter_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+        
+    return jsonify({
+        'status': job['status'],
+        'logs': job['logs'],
+        'returncode': job['returncode']
+    })
 
 # --- AI Assistant Integration Endpoints ---
 

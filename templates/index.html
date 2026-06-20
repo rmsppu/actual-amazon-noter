@@ -928,6 +928,52 @@
     // Run AI check on load
     checkAiStatus();
 
+    function resetProcessBtn() {
+        submitBtn.disabled = false;
+        btnSpinner.style.display = 'none';
+        btnText.textContent = getSubmitBtnText();
+        logTerminal.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function pollNoterLogs(jobId) {
+        const interval = setInterval(async () => {
+            try {
+                const response = await fetch(basePath + 'process/status/' + jobId);
+                if (!response.ok) {
+                    throw new Error(`HTTP status ${response.status}`);
+                }
+                const data = await response.json();
+                
+                if (data.logs) {
+                    logContent.innerHTML = colorizeLogs(cleanPythonBytesString(data.logs));
+                    logTerminal.querySelector('.terminal-body').scrollTop = logTerminal.querySelector('.terminal-body').scrollHeight;
+                }
+                
+                if (data.status === 'success') {
+                    clearInterval(interval);
+                    terminalDot.className = 'terminal-dot success';
+                    resetProcessBtn();
+                    
+                    // Post-Process Auto-Trigger Cascade
+                    if (autoTriggerToggle.checked && !runAiBtn.disabled) {
+                        setTimeout(() => {
+                            triggerAiClassification(true);
+                        }, 1000);
+                    }
+                } else if (data.status === 'failed') {
+                    clearInterval(interval);
+                    terminalDot.className = 'terminal-dot';
+                    resetProcessBtn();
+                }
+            } catch (error) {
+                clearInterval(interval);
+                logContent.innerHTML += `\n<span class="log-error">Error fetching logs: ${error.message}</span>`;
+                terminalDot.className = 'terminal-dot';
+                resetProcessBtn();
+            }
+        }, 1500);
+    }
+
     // Submit form and request backend processing
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -961,33 +1007,18 @@
 
             const data = await response.json();
 
-            if (response.ok) {
-                let out = '';
-                if (data.stdout) out += data.stdout;
-                if (data.stderr) out += '\n--- ERRORS/WARNINGS ---\n' + data.stderr;
-                
-                logContent.innerHTML = colorizeLogs(cleanPythonBytesString(out) || 'Execution completed with no output logs.');
-                terminalDot.className = 'terminal-dot success';
-
-                // Post-Process Auto-Trigger Cascade (only on execution runs, or dry-run successful too)
-                // Let's run whenever Noter reports success, the autoTrigger is checked, and AI integration is active!
-                if (data.success && autoTriggerToggle.checked && !runAiBtn.disabled) {
-                    setTimeout(() => {
-                        triggerAiClassification(true);
-                    }, 1000);
-                }
+            if (response.ok && data.success && data.job_id) {
+                logContent.innerHTML = `Successfully started processing job: ${data.job_id}\nStreaming logs...\n----------------------------------------------------------\n`;
+                pollNoterLogs(data.job_id);
             } else {
                 logContent.innerHTML = `<span class="log-error">Error: ${data.error || 'Server error occurred'}</span>`;
                 terminalDot.className = 'terminal-dot';
+                resetProcessBtn();
             }
         } catch (error) {
             logContent.innerHTML = `<span class="log-error">Error: Failed to connect to server: ${error.message}</span>`;
             terminalDot.className = 'terminal-dot';
-        } finally {
-            submitBtn.disabled = false;
-            btnSpinner.style.display = 'none';
-            btnText.textContent = getSubmitBtnText();
-            logTerminal.scrollIntoView({ behavior: 'smooth' });
+            resetProcessBtn();
         }
     });
 </script>
