@@ -29,7 +29,7 @@ from typing import Any, Optional
 import requests
 
 
-VERSION = "2.2.0-fork.8"
+VERSION = "2.2.0-fork.9"
 
 # Constant tags used to identify records already processed
 AMAZON_ORDER_ID_TAG = "#Amazon-Order-ID"

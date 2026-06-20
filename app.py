@@ -6,6 +6,7 @@ import threading
 import time
 import sys
 import traceback
+import re
 from flask import Flask, request, render_template, jsonify
 
 # Safe import of kubernetes python client
@@ -87,25 +88,39 @@ def diagnostics():
         }), 500
 
 
-# --- Asynchronous Noter execution cache ---
-noter_jobs = {}
-noter_jobs_lock = threading.Lock()
+# --- Asynchronous Noter execution state (file-based to support multi-process Gunicorn) ---
+
+def get_job_paths(job_id):
+    jobs_dir = os.path.join(tempfile.gettempdir(), 'noter_jobs')
+    os.makedirs(jobs_dir, exist_ok=True)
+    status_path = os.path.join(jobs_dir, f"{job_id}.status")
+    log_path = os.path.join(jobs_dir, f"{job_id}.log")
+    return status_path, log_path
+
+def clean_old_jobs():
+    jobs_dir = os.path.join(tempfile.gettempdir(), 'noter_jobs')
+    if not os.path.exists(jobs_dir):
+        return
+    try:
+        now = time.time()
+        for filename in os.listdir(jobs_dir):
+            filepath = os.path.join(jobs_dir, filename)
+            # Delete files older than 1 hour (3600 seconds)
+            if os.path.isfile(filepath) and (now - os.path.getmtime(filepath) > 3600):
+                os.remove(filepath)
+    except Exception as e:
+        print(f"Error cleaning old jobs: {e}", file=sys.stderr)
 
 def execute_noter_async(job_id, cmd, env, temp_files):
-    cwd = os.path.dirname(os.path.abspath(__file__))
+    status_path, log_path = get_job_paths(job_id)
     
-    with noter_jobs_lock:
-        # Prevent memory leaks by capping the cache size at 50 jobs
-        if len(noter_jobs) >= 50:
-            keys_to_remove = list(noter_jobs.keys())[:10]
-            for k in keys_to_remove:
-                noter_jobs.pop(k, None)
-                
-        noter_jobs[job_id] = {
-            "status": "running",
-            "logs": "Starting processing job...\n",
-            "returncode": None
-        }
+    try:
+        with open(status_path, "w") as f:
+            f.write("running\n")
+        with open(log_path, "w") as f:
+            f.write("Starting processing job...\n")
+    except Exception as e:
+        print(f"Error initializing job files for {job_id}: {e}", file=sys.stderr)
         
     try:
         # Spawn the subprocess
@@ -115,7 +130,7 @@ def execute_noter_async(job_id, cmd, env, temp_files):
             stderr=subprocess.STDOUT,
             text=True,
             env=env,
-            cwd=cwd,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
             bufsize=1
         )
         
@@ -125,28 +140,38 @@ def execute_noter_async(job_id, cmd, env, temp_files):
             for temp_path, orig_filename in temp_files:
                 cleaned_line = cleaned_line.replace(temp_path, orig_filename)
                 
-            with noter_jobs_lock:
-                noter_jobs[job_id]["logs"] += cleaned_line
+            try:
+                with open(log_path, "a") as f:
+                    f.write(cleaned_line)
+                    f.flush()
+            except Exception:
+                pass
                 
         process.stdout.close()
         returncode = process.wait()
         
-        with noter_jobs_lock:
-            noter_jobs[job_id]["returncode"] = returncode
-            if returncode == 0:
-                noter_jobs[job_id]["status"] = "success"
-                print(f"Noter job {job_id} succeeded", flush=True)
-            else:
-                noter_jobs[job_id]["status"] = "failed"
-                print(f"Noter job {job_id} failed with return code {returncode}", file=sys.stderr, flush=True)
+        try:
+            with open(status_path, "w") as f:
+                if returncode == 0:
+                    f.write(f"success\n{returncode}\n")
+                    print(f"Noter job {job_id} succeeded", flush=True)
+                else:
+                    f.write(f"failed\n{returncode}\n")
+                    print(f"Noter job {job_id} failed with return code {returncode}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
                 
     except Exception as e:
         error_msg = f"ERROR: Execution failed: {str(e)}\n{traceback.format_exc()}"
         print(f"Noter job {job_id} exception: {str(e)}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
-        with noter_jobs_lock:
-            noter_jobs[job_id]["status"] = "failed"
-            noter_jobs[job_id]["logs"] += error_msg
+        try:
+            with open(log_path, "a") as f:
+                f.write(error_msg)
+            with open(status_path, "w") as f:
+                f.write("failed\n-1\n")
+        except Exception:
+            pass
     finally:
         # Clean up temporary files
         for temp_path, _ in temp_files:
@@ -171,6 +196,9 @@ def process():
     days = request.form.get('days', '')
     amount_tolerance = request.form.get('amount_tolerance', '')
     fmt = request.form.get('format', 'auto')
+
+    # Clean up any jobs older than 1 hour to prevent disk space accumulation
+    clean_old_jobs()
 
     # Save to unique temporary files to prevent name collisions
     temp_dir = tempfile.gettempdir()
@@ -282,15 +310,38 @@ def process():
 
 @app.route('/process/status/<job_id>')
 def process_status(job_id):
-    with noter_jobs_lock:
-        job = noter_jobs.get(job_id)
-    if not job:
+    # Security: Ensure job_id contains only alphanumeric/hyphen characters to prevent directory traversal
+    if not re.match(r"^[a-zA-Z0-9\-]+$", job_id):
+        return jsonify({'error': 'Invalid Job ID'}), 400
+        
+    status_path, log_path = get_job_paths(job_id)
+    
+    if not os.path.exists(status_path):
         return jsonify({'error': 'Job not found'}), 404
         
+    # Read status and returncode
+    try:
+        with open(status_path, "r") as f:
+            lines = [line.strip() for line in f.readlines()]
+        status = lines[0] if lines else "failed"
+        returncode = int(lines[1]) if len(lines) > 1 else None
+    except Exception as e:
+        status = "failed"
+        returncode = -1
+        
+    # Read logs
+    logs = ""
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r") as f:
+                logs = f.read()
+        except Exception:
+            logs = "Error reading logs."
+            
     return jsonify({
-        'status': job['status'],
-        'logs': job['logs'],
-        'returncode': job['returncode']
+        'status': status,
+        'logs': logs,
+        'returncode': returncode
     })
 
 # --- AI Assistant Integration Endpoints ---
