@@ -1,0 +1,1419 @@
+#!/usr/bin/env python3
+
+# Copyright (c) rmsppu@merctech.com
+# MIT License - see LICENSE file in repository root for full license text
+
+"""
+actual-ecommerce-noter - Update Actual Budget transaction notes with Amazon or PayPal order details
+
+This script correlates transaction records from CSV exports (Amazon or PayPal) with
+transactions in Actual Budget, then updates the Notes field with purchase details.
+
+Usage:
+    actual-ecommerce-noter [--dry-run [json] | --execute] [--days X] [--force] [--format amazon|paypal|auto]
+        [--actual-http-api URL | --actual-http-api-file /path/to/URLfile]
+        [--actual-http-api-key SecretKey | --actual-http-api-key-file /path/to/SecretKey]
+        [--actual-syncid SyncID | --actual-syncid-file /path/to/SyncID]
+        File.csv File2.csv ...
+"""
+
+import argparse
+import csv
+import json
+import os
+import re
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional
+import requests
+
+
+VERSION = "2.2.0-fork.9"
+
+# Constant tags used to identify records already processed
+AMAZON_ORDER_ID_TAG = "#Amazon-Order-ID"
+AMAZON_ORDER_DATE_TAG = "#Amazon-Order-Date"
+AMAZON_PRODUCT_NAME_TAG = "#Amazon-Product-Name"
+AMAZON_SHIPPING_ADDRESS_TAG = "#Amazon-Shipping-Address"
+
+PAYPAL_TRANSACTION_ID_TAG = "#PayPal-Transaction-ID"
+PAYPAL_DATE_TAG = "#PayPal-Date"
+PAYPAL_PAYEE_TAG = "#PayPal-Payee"
+PAYPAL_ITEM_TITLE_TAG = "#PayPal-Item-Title"
+
+# Constant eBay tags
+EBAY_ORDER_ID_TAG = "#eBay-Order-ID"
+EBAY_ORDER_DATE_TAG = "#eBay-Order-Date"
+EBAY_PRODUCT_NAME_TAG = "#eBay-Product-Name"
+EBAY_SELLER_NAME_TAG = "#eBay-Seller-Name"
+
+# Default configuration
+DEFAULT_DAYS_TOLERANCE = 3
+DEFAULT_BASE_CURRENCY = os.environ.get("ACTUAL_BASE_CURRENCY", "GBP")
+
+# Required environment variable names
+ENV_ACTUAL_HTTP_API_URL = "ACTUAL_HTTP_API_URL"
+ENV_ACTUAL_HTTP_API_KEY = "ACTUAL_HTTP_API_KEY"
+ENV_ACTUAL_SYNCID = "ACTUAL_SYNCID"
+ENV_ACTUAL_BUDGETID = "ACTUAL_BUDGETID"
+
+
+class AmazonOrder:
+    """Represents an aggregated Amazon order (multiple items with same Order ID)"""
+    
+    def __init__(self):
+        self.order_id = ""
+        self.amount = 0.0
+        self.date = None
+        self.product_names = []  # List of product names for multi-item orders
+        self.item_amounts = []   # List of individual item amounts
+        self.shipping_address = ""
+        self.currency = ""
+        self.payment_methods = set()
+    
+    def add_item(self, record: 'AmazonRecord'):
+        """Add an item to this order"""
+        if not self.order_id:
+            self.order_id = record.order_id
+            self.date = record.date
+            self.shipping_address = record.shipping_address
+            self.currency = getattr(record, "currency", DEFAULT_BASE_CURRENCY)
+        
+        self.amount += record.amount
+        if record.product_name:
+            self.product_names.append(record.product_name)
+        self.item_amounts.append(record.amount)
+        
+        payment_method = getattr(record, "payment_method", "")
+        if payment_method:
+            self.payment_methods.add(payment_method)
+    
+    def get_tags(self) -> list:
+        """Get tags to add to transaction notes"""
+        tags = []
+        order_ids = [oid.strip() for oid in self.order_id.split(";")] if self.order_id else []
+        for oid in order_ids:
+            tags.extend([AMAZON_ORDER_ID_TAG, oid])
+        
+        if self.date:
+            date_str = self.date.strftime("%m-%d-%Y")
+            tags.append(AMAZON_ORDER_DATE_TAG)
+            tags.append(date_str)
+        
+        # Use split tags only for multiple items in a single order
+        if len(self.product_names) > 1:
+            # Multiple items in single order - use Split tags
+            for i, (product_name, item_amount) in enumerate(zip(self.product_names, self.item_amounts)):
+                tags.append(f"#Amazon-Product-Name-Split-{i+1}")
+                tags.append(product_name)
+                tags.append(f"#Amazon-Cost-Split-{i+1}")
+                tags.append(f"{self.currency} {item_amount:.2f}")
+        elif len(self.product_names) == 1:
+            # Single item in order - use standard tags
+            tags.append(AMAZON_PRODUCT_NAME_TAG)
+            tags.append(self.product_names[0])
+        
+        if self.shipping_address:
+            tags.append(AMAZON_SHIPPING_ADDRESS_TAG)
+            tags.append(self.shipping_address)
+        
+        return tags
+
+
+class AmazonRecord:
+    """Represents a single Amazon transaction record from CSV"""
+    
+    def __init__(self, record_type: str, data: dict):
+        self.record_type = record_type
+        self.data = data
+        self.currency = data.get("Currency", DEFAULT_BASE_CURRENCY)
+        self.payment_method = ""
+        
+        # Extract relevant fields based on record type
+        if record_type == "Order_History":
+            self.order_id = data.get("Order ID", "")
+            self.amount = self._parse_amount(data.get("Total Amount", ""))
+            self.date = self._parse_date(data.get("Order Date", ""))
+            self.product_name = data.get("Product Name", "")
+            self.shipping_address = data.get("Shipping Address", "")
+            self.payment_method = data.get("Payment Method Type", data.get("Payment Instrument Type", data.get("Payment Information", ""))) or ""
+        elif record_type == "Digital_Content_Orders":
+            self.order_id = data.get("Order ID", "")
+            self.amount = self._parse_amount(data.get("Transaction Amount", ""))
+            self.date = self._parse_date(data.get("Order Date", ""))
+            self.product_name = data.get("Title", "")
+            self.shipping_address = ""
+        elif record_type == "Refund_Details":
+            self.order_id = data.get("Order ID", "")
+            self.amount = -abs(self._parse_amount(data.get("Refund Amount", "")))
+            self.date = self._parse_date(data.get("Refund Date", ""))
+            self.product_name = data.get("Product Name", "")
+            self.shipping_address = ""
+        elif record_type == "Digital_Returns":
+            self.order_id = data.get("Order ID", "")
+            self.amount = -abs(self._parse_amount(data.get("Transaction Amount", "")))
+            self.date = self._parse_date(data.get("Return Date", ""))
+            self.product_name = data.get("Title", "")
+            self.shipping_address = ""
+    
+    def _parse_amount(self, value: str) -> float:
+        """Parse amount string to float"""
+        if not value:
+            return 0.0
+        # Remove currency symbols and commas
+        value = value.replace("$", "").replace(",", "").strip()
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    
+    def _parse_date(self, value: str) -> Optional[datetime]:
+        """Parse date string to datetime"""
+        if not value:
+            return None
+        # Try common date formats
+        formats = [
+            "%Y-%m-%dT%H:%M:%S.%fZ", # ISO 8601 with milliseconds and Z
+            "%Y-%m-%dT%H:%M:%S.%f",  # ISO 8601 with milliseconds
+            "%Y-%m-%dT%H:%M:%SZ",  # ISO 8601
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+            "%m-%d-%Y",
+            "%m/%d/%Y",
+            "%d-%m-%Y",
+        ]
+        for fmt in formats:
+            try:
+                return datetime.strptime(value.strip(), fmt)
+            except ValueError:
+                continue
+        return None
+    
+    def get_tags(self) -> list:
+        """Get tags to add to transaction notes"""
+        tags = [AMAZON_ORDER_ID_TAG]
+        if self.order_id:
+            tags.append(self.order_id)
+        
+        if self.date:
+            date_str = self.date.strftime("%m-%d-%Y")
+            tags.append(AMAZON_ORDER_DATE_TAG)
+            tags.append(date_str)
+        
+        if self.product_name:
+            tags.append(AMAZON_PRODUCT_NAME_TAG)
+            tags.append(self.product_name)
+        
+        if self.shipping_address:
+            tags.append(AMAZON_SHIPPING_ADDRESS_TAG)
+            tags.append(self.shipping_address)
+        
+        return tags
+
+
+class PaypalRecord:
+    """Represents a single PayPal transaction record from CSV"""
+    
+    def __init__(self, data: dict):
+        self.data = data
+        self.date_str = data.get("Date", "")
+        self.time_str = data.get("Time", "")
+        self.timezone = data.get("Time zone", "")
+        self.name = data.get("Name", "")
+        self.type = data.get("Type", "")
+        self.status = data.get("Status", "")
+        self.currency = data.get("Currency", DEFAULT_BASE_CURRENCY)
+        self.amount_raw = data.get("Amount", "0.00")
+        self.receipt_id = data.get("Receipt ID", "")
+        self.transaction_id = data.get("Transaction ID", "")
+        self.item_title = data.get("Item Title", "")
+        
+        # Parse amount
+        try:
+            val = self.amount_raw.replace(",", "").strip()
+            self.amount = float(val)
+        except ValueError:
+            self.amount = 0.0
+            
+        # Parse date (DD/MM/YYYY)
+        self.date = None
+        if self.date_str:
+            for fmt in ["%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"]:
+                try:
+                    self.date = datetime.strptime(self.date_str.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+
+
+class PaypalOrder:
+    """Aggregated/compatible PayPal order interface matching Amazon duck-typing"""
+    
+    def __init__(self, record: PaypalRecord):
+        self.order_id = record.transaction_id
+        self.transaction_id = record.transaction_id
+        self.receipt_id = record.receipt_id
+        self.date = record.date
+        self.name = record.name
+        self.payee = record.name
+        self.currency = record.currency
+        self.shipping_address = ""
+        self.product_names = [record.item_title] if record.item_title else [record.name]
+        self.item_amounts = [abs(record.amount)]
+        # Flip sign for matching compatibility (Amazon purchase records are positive spent amount)
+        self.amount = abs(record.amount) if record.amount < 0 else record.amount
+        
+    def get_tags(self) -> list:
+        tags = [PAYPAL_TRANSACTION_ID_TAG, self.transaction_id]
+        if self.date:
+            tags.append(PAYPAL_DATE_TAG)
+            tags.append(self.date.strftime("%m-%d-%Y"))
+        if self.name:
+            tags.append(PAYPAL_PAYEE_TAG)
+            tags.append(self.name)
+            
+        if len(self.product_names) > 1:
+            for i, (pname, iamt) in enumerate(zip(self.product_names, self.item_amounts)):
+                tags.append(f"#PayPal-Product-Name-Split-{i+1}")
+                tags.append(pname)
+                tags.append(f"#PayPal-Cost-Split-{i+1}")
+                tags.append(f"{self.currency} {iamt:.2f}")
+        elif len(self.product_names) == 1:
+            tags.append(PAYPAL_ITEM_TITLE_TAG)
+            tags.append(self.product_names[0])
+            
+        return tags
+
+
+class EbayRecord:
+    """Represents a single eBay transaction record from XLSX"""
+    
+    def __init__(self, data: dict):
+        self.data = data
+        self.order_id = str(data.get("OrderNumber", "")).strip()
+        self.date_str = str(data.get("OrderDate", "")).strip()
+        self.item_id = str(data.get("ItemID", "")).strip()
+        self.seller = str(data.get("Seller", "")).strip()
+        self.product_name = str(data.get("ItemName", "")).strip()
+        self.currency = str(data.get("Currency", DEFAULT_BASE_CURRENCY)).strip() or DEFAULT_BASE_CURRENCY
+        
+        # Parse price
+        try:
+            self.item_price = float(data.get("ItemPrice", 0.0))
+        except (ValueError, TypeError):
+            self.item_price = 0.0
+            
+        # Parse date (e.g. "May 25, 2026")
+        self.date = None
+        if self.date_str:
+            for fmt in ["%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"]:
+                try:
+                    self.date = datetime.strptime(self.date_str, fmt)
+                    break
+                except ValueError:
+                    continue
+
+
+class EbayOrder:
+    """Aggregated eBay order matching the Amazon/PayPal duck-typed interface"""
+    
+    def __init__(self):
+        self.order_id = None
+        self.date = None
+        self.seller = None
+        self.currency = None
+        self.product_names = []
+        self.item_amounts = []
+        self.shipping_address = ""
+        
+    def add_item(self, record: EbayRecord):
+        if not self.order_id:
+            self.order_id = record.order_id
+            self.date = record.date
+            self.seller = record.seller
+            self.currency = record.currency
+        
+        self.product_names.append(record.product_name)
+        self.item_amounts.append(record.item_price)
+        
+    @property
+    def amount(self) -> float:
+        return sum(self.item_amounts)
+        
+    def get_tags(self) -> list:
+        tags = [EBAY_ORDER_ID_TAG]
+        if self.order_id:
+            tags.append(self.order_id)
+            
+        if self.date:
+            tags.append(EBAY_ORDER_DATE_TAG)
+            tags.append(self.date.strftime("%m-%d-%Y"))
+            
+        if self.seller:
+            tags.append(EBAY_SELLER_NAME_TAG)
+            tags.append(self.seller)
+            
+        if len(self.product_names) > 1:
+            for i, (pname, iamt) in enumerate(zip(self.product_names, self.item_amounts)):
+                tags.append(f"#eBay-Product-Name-Split-{i+1}")
+                tags.append(pname)
+                tags.append(f"#eBay-Cost-Split-{i+1}")
+                tags.append(f"{self.currency} {iamt:.2f}")
+        elif len(self.product_names) == 1:
+            tags.append(EBAY_PRODUCT_NAME_TAG)
+            tags.append(self.product_names[0])
+            
+        return tags
+
+
+class ActualBudgetAPI:
+    """Client for interacting with actual-http-api"""
+    
+    def __init__(self, url: str, key: str, sync_id: str):
+        self.url = url.rstrip("/")
+        self.sync_id = sync_id
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Content-Type": "application/json",
+            "x-api-key": key
+        })
+
+    def get_accounts(self) -> list:
+        """Get all accounts from the budget."""
+        endpoint = f"{self.url}/v1/budgets/{self.sync_id}/accounts"
+        response = self.session.get(endpoint)
+        response.raise_for_status()
+        return response.json().get("data", [])
+
+    def get_transactions(self, account_id: str, since_date: str = None) -> list:
+        """Get transactions for a specific account."""
+        endpoint = f"{self.url}/v1/budgets/{self.sync_id}/accounts/{account_id}/transactions"
+        params = {}
+        if not since_date:
+            since_date = "1970-01-01"
+        params["since_date"] = since_date
+        response = self.session.get(endpoint, params=params)
+        response.raise_for_status()
+        return response.json().get("data", [])
+
+    def get_all_transactions(self, since_date: str = None) -> list:
+        """Get all transactions from all accounts."""
+        accounts = self.get_accounts()
+        all_transactions = []
+        
+        for account in accounts:
+            account_id = account.get("id")
+            if account_id:
+                transactions = self.get_transactions(account_id, since_date=since_date)
+                all_transactions.extend(transactions)
+        
+        return all_transactions
+
+    def get_transactions_by_payee_contains(self, search_string: str) -> list:
+        """Get transactions where Payee contains the search string."""
+        all_transactions = self.get_all_transactions()
+        search_lower = search_string.lower()
+        return [
+            t for t in all_transactions
+            if search_lower in (t.get("payee_name") or "").lower() or
+               search_lower in (t.get("imported_payee") or "").lower()
+        ]
+
+    def split_transaction(self, transaction_id, account_id, date, payee_id, splits):
+        """Convert a transaction into a split with sub-transactions via REST API."""
+        subtransactions = []
+        for s in splits:
+            subtransactions.append({
+                "amount": s["amount"],
+                "account": account_id,
+                "date": date,
+                "parent_id": transaction_id,
+                "payee": payee_id,
+                "is_child": True,
+                "is_parent": False,
+                "notes": s.get("notes", ""),
+            })
+        endpoint = f"{self.url}/v1/budgets/{self.sync_id}/transactions/{transaction_id}"
+        response = self.session.patch(
+            endpoint,
+            json={"transaction": {"is_parent": True, "subtransactions": subtransactions}}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def update_transaction(self, transaction_id: str, notes: str) -> dict:
+        """Update a transaction's notes field."""
+        endpoint = f"{self.url}/v1/budgets/{self.sync_id}/transactions/{transaction_id}"
+        response = self.session.patch(
+            endpoint,
+            json={"transaction": {"notes": notes}}
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def parse_config_file(file_path: str) -> dict:
+    """Parse a configuration file (key=value or bare value)."""
+    config = {}
+    
+    with open(file_path, "r") as f:
+        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    
+    if not lines:
+        return config
+    
+    has_equals = any("=" in line for line in lines)
+    
+    if has_equals:
+        for line in lines:
+            if "=" in line:
+                key, value = line.split("=", 1)
+                config[key.strip()] = value.strip()
+    else:
+        config["_bare_value"] = lines[0]
+        
+    return config
+
+
+def get_config_value(arg_value: Optional[str], env_name: str, file_path: Optional[str], config: dict) -> Optional[str]:
+    """Get config value prioritising CLI arguments, then file paths, then env vars."""
+    if arg_value:
+        if file_path:
+            raise ValueError(f"Cannot specify both value and file for {env_name}")
+        return arg_value
+    
+    if file_path:
+        file_config = parse_config_file(file_path)
+        if env_name in file_config:
+            return file_config[env_name]
+        if "_bare_value" in file_config:
+            return file_config["_bare_value"]
+        if env_name in config:
+            return config[env_name]
+        return None
+    
+    return os.environ.get(env_name)
+
+
+def read_amazon_csv(file_path: str) -> tuple:
+    """Read an Amazon CSV file and determine its type."""
+    records = []
+    record_type = None
+    
+    with open(file_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        
+        if "Order ID" in fieldnames and "Total Amount" in fieldnames:
+            record_type = "Order_History"
+        elif "Order ID" in fieldnames and "Transaction Amount" in fieldnames:
+            if "Order Date" in fieldnames:
+                record_type = "Digital_Content_Orders"
+            elif "Refund Date" in fieldnames:
+                record_type = "Refund_Details"
+            else:
+                record_type = "Digital_Content_Orders"
+        elif "Order ID" in fieldnames and "Refund Amount" in fieldnames:
+            record_type = "Refund_Details"
+        else:
+            basename = os.path.basename(file_path).lower()
+            if "order_history" in basename:
+                record_type = "Order_History"
+            elif "digital_content_orders" in basename:
+                record_type = "Digital_Content_Orders"
+            elif "refund_details" in basename:
+                record_type = "Refund_Details"
+            elif "digital_returns" in basename:
+                record_type = "Digital_Returns"
+        
+        if not record_type:
+            raise ValueError(f"Unable to determine Amazon record type for {file_path}")
+        
+        for row in reader:
+            if row:
+                records.append(AmazonRecord(record_type, row))
+    
+    return record_type, records
+
+
+def read_paypal_csv(file_path: str, base_currency: str = DEFAULT_BASE_CURRENCY) -> tuple:
+    """Read a PayPal CSV file and filter deposit buffer rows and conversion conversion mappings."""
+    all_rows = []
+    with open(file_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row:
+                all_rows.append(row)
+                
+    records = [PaypalRecord(row) for row in all_rows]
+    valid_orders = []
+    
+    for record in records:
+        # Filter deposit funding buffer lines (where merchant Name is empty)
+        # or non-completed transactions
+        if not record.name or record.name.strip() == "":
+            continue
+        if record.status.strip() != "Completed":
+            continue
+            
+        # Foreign Currency Conversion handling:
+        # If the currency is not our base currency, we find the corresponding General Currency Conversion row in base currency
+        # occurring at the exact same Date and Time.
+        if record.currency != base_currency:
+            conversion_amount = None
+            for conv in records:
+                if (conv.type.strip() == "General Currency Conversion" and
+                    conv.date_str == record.date_str and
+                    conv.time_str == record.time_str and
+                    conv.currency == base_currency and
+                    conv.amount < 0):
+                    conversion_amount = conv.amount
+                    break
+            if conversion_amount is not None:
+                record.amount = conversion_amount
+                record.currency = base_currency
+                
+        order = PaypalOrder(record)
+        valid_orders.append(order)
+        
+    return "PayPal_Download", valid_orders
+
+
+def read_ebay_xlsx(file_path: str) -> tuple:
+    """Read an eBay XLSX purchase history file using openpyxl."""
+    import openpyxl
+    orders_dict = {}
+    
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+    sheet = wb.active
+    
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise ValueError(f"XLSX file is empty: {file_path}")
+        
+    headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+    required = ["OrderNumber", "ItemName", "ItemPrice"]
+    for req in required:
+        if req not in headers:
+            raise ValueError(f"Missing required eBay header: {req}")
+            
+    for row in rows[1:]:
+        if not row or all(v is None for v in row):
+            continue
+        row_dict = dict(zip(headers, row))
+        record = EbayRecord(row_dict)
+        order_id = record.order_id
+        if not order_id:
+            continue
+            
+        if order_id not in orders_dict:
+            orders_dict[order_id] = EbayOrder()
+            
+        orders_dict[order_id].add_item(record)
+        
+    orders = list(orders_dict.values())
+    return "eBay_Purchase_History", orders
+
+
+def clean_payee_words(payee: str) -> set:
+    if not payee:
+        return set()
+    ignore_words = {"paypal", "payments", "payment", "limited", "ltd", "uk", "group", "co", "corporation", "corp", "inc", "direct", "debit", "bank", "deposit", "to", "account", "ebay"}
+    words = re.findall(r'[a-z0-9]+', payee.lower())
+    return {w for w in words if w not in ignore_words and len(w) > 1}
+
+
+def payee_matches(budget_payee: str, csv_payee: str) -> bool:
+    budget_words = clean_payee_words(budget_payee)
+    csv_words = clean_payee_words(csv_payee)
+    if not budget_words or not csv_words:
+        return True
+    if budget_words.intersection(csv_words):
+        return True
+    for bw in budget_words:
+        if bw in csv_payee.lower():
+            return True
+    for cw in csv_words:
+        if cw in budget_payee.lower():
+            return True
+    return False
+
+
+def match_transactions(
+    transactions: list,
+    amazon_records: list,
+    days_tolerance: int,
+    amount_tolerance: int,
+    verify_payee: bool = False,
+    is_income: bool = False
+) -> list:
+    """Match Actual Budget transactions with aggregated orders (Amazon, PayPal or eBay)"""
+    from itertools import combinations
+    
+    matches = []
+    used_amazon = set()
+    used_transactions = set()
+    
+    # Phase 1: Standard 1-to-1 exact amount matching
+    for tx_idx, transaction in enumerate(transactions):
+        amount = transaction.get("amount", 0)
+        
+        if is_income:
+            if amount <= 0:
+                continue
+        else:
+            if amount >= 0:
+                continue
+        
+        trans_date_str = transaction.get("date", "")
+        if not trans_date_str:
+            continue
+        
+        trans_date = None
+        for fmt in ["%Y-%m-%d", "%m-%d-%Y", "%m/%d/%Y"]:
+            try:
+                trans_date = datetime.strptime(trans_date_str.strip(), fmt)
+                break
+            except ValueError:
+                continue
+        
+        if not trans_date:
+            continue
+        
+        for i, amazon in enumerate(amazon_records):
+            if i in used_amazon:
+                continue
+            if not amazon.date:
+                continue
+            
+            amazon_amount_cents = int(round(amazon.amount * 100))
+            
+            if amount < 0:
+                if amazon_amount_cents <= 0:
+                    continue
+                if abs(abs(amount) - amazon_amount_cents) > amount_tolerance:
+                    continue
+            else:
+                if amazon_amount_cents >= 0:
+                    continue
+                if abs(abs(amount) - abs(amazon_amount_cents)) > amount_tolerance:
+                    continue
+            
+            if verify_payee:
+                budget_payee = transaction.get("payee_name") or transaction.get("imported_payee") or ""
+                
+                # Special logic for eBay matching: check if payee or notes contain eBay order ID
+                if hasattr(amazon, 'seller') and hasattr(amazon, 'order_id'):
+                    budget_payee_lower = budget_payee.lower()
+                    notes_lower = (transaction.get("notes") or "").lower()
+                    
+                    order_id_in_payee = False
+                    if amazon.order_id and (
+                        amazon.order_id.lower() in budget_payee_lower or 
+                        amazon.order_id.lower() in notes_lower
+                    ):
+                        order_id_in_payee = True
+                    
+                    # If payee or notes contains an eBay order identifier but doesn't match this record's order ID, reject it
+                    if "ebay o*" in budget_payee_lower or "ebay o" in budget_payee_lower or "ebay o*" in notes_lower or "ebay o" in notes_lower:
+                        if not order_id_in_payee:
+                            continue
+                    
+                    if "ebay" not in budget_payee_lower and "ebay" not in notes_lower:
+                        continue
+                else:
+                    csv_payee = getattr(amazon, 'payee', '') or getattr(amazon, 'name', '') or getattr(amazon, 'seller', '') or ''
+                    if not payee_matches(budget_payee, csv_payee):
+                        continue
+            
+            date_diff = trans_date - amazon.date
+            if date_diff.days < -2:
+                continue
+            if date_diff.days > days_tolerance:
+                continue
+            
+            matches.append((transaction, amazon))
+            used_amazon.add(i)
+            used_transactions.add(tx_idx)
+            break
+            
+    # Phase 2: Amazon-specific matching (Consolidated Charges and Split Gift Card Payments)
+    if not verify_payee:
+        for tx_idx, transaction in enumerate(transactions):
+            if tx_idx in used_transactions:
+                continue
+                
+            amount = transaction.get("amount", 0)
+            if is_income:
+                if amount <= 0:
+                    continue
+            else:
+                if amount >= 0:
+                    continue
+                    
+            trans_date_str = transaction.get("date", "")
+            if not trans_date_str:
+                continue
+                
+            trans_date = None
+            for fmt in ["%Y-%m-%d", "%m-%d-%Y", "%m/%d/%Y"]:
+                try:
+                    trans_date = datetime.strptime(trans_date_str.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+            if not trans_date:
+                continue
+                
+            # Gather matching candidates in date range
+            candidates = []
+            for i, amazon in enumerate(amazon_records):
+                if i in used_amazon:
+                    continue
+                if not amazon.date:
+                    continue
+                    
+                # Consolidated date window: allow a few days extra lag for consolidated shipping
+                date_diff = (trans_date - amazon.date).days
+                if -2 <= date_diff <= days_tolerance + 5:
+                    amazon_amount_cents = int(round(amazon.amount * 100))
+                    if amount < 0 and amazon_amount_cents > 0:
+                        candidates.append((i, amazon))
+                    elif amount > 0 and amazon_amount_cents < 0:
+                        candidates.append((i, amazon))
+                        
+            # Try combinations for consolidated charges (sizes 2 to 4)
+            found_comb = None
+            for r in range(2, min(5, len(candidates) + 1)):
+                for comb in combinations(candidates, r):
+                    comb_sum = sum(int(round(c[1].amount * 100)) for c in comb)
+                    if abs(abs(amount) - abs(comb_sum)) <= amount_tolerance:
+                        found_comb = comb
+                        break
+                if found_comb:
+                    break
+                    
+            if found_comb:
+                matched_indices = [c[0] for c in found_comb]
+                matched_orders = [c[1] for c in found_comb]
+                
+                # Consolidate multiple orders into one virtual order
+                virtual_order = AmazonOrder()
+                virtual_order.order_id = ";".join(sorted(list(set(o.order_id for o in matched_orders))))
+                virtual_order.date = max(o.date for o in matched_orders)
+                virtual_order.shipping_address = matched_orders[0].shipping_address
+                virtual_order.currency = matched_orders[0].currency
+                
+                for o in matched_orders:
+                    virtual_order.amount += o.amount
+                    virtual_order.product_names.extend(o.product_names)
+                    virtual_order.item_amounts.extend(o.item_amounts)
+                    if hasattr(o, 'payment_methods'):
+                        virtual_order.payment_methods.update(o.payment_methods)
+                        
+                matches.append((transaction, virtual_order))
+                for idx in matched_indices:
+                    used_amazon.add(idx)
+                used_transactions.add(tx_idx)
+                continue
+                
+            # Check for split payment (Gift Card) if not consolidated
+            split_match = None
+            for i, amazon in enumerate(amazon_records):
+                if i in used_amazon:
+                    continue
+                if not amazon.date:
+                    continue
+                    
+                date_diff = (trans_date - amazon.date).days
+                if -2 <= date_diff <= days_tolerance + 5:
+                    payment_str = " ".join(getattr(amazon, 'payment_methods', [])).lower()
+                    if "gift" in payment_str or "certificate" in payment_str:
+                        amazon_amount_cents = int(round(amazon.amount * 100))
+                        # Order total in CSV must be greater than card charge
+                        if abs(amazon_amount_cents) > abs(amount) + amount_tolerance:
+                            split_match = amazon
+                            matched_idx = i
+                            break
+                            
+            if split_match:
+                matches.append((transaction, split_match))
+                used_amazon.add(matched_idx)
+                used_transactions.add(tx_idx)
+                
+    return matches
+
+
+def has_existing_tags(notes: str) -> bool:
+    """Check if notes field already contains Amazon or PayPal tags from previous processing."""
+    if notes is None:
+        return False
+    return any(tag in notes for tag in [
+        AMAZON_ORDER_ID_TAG,
+        AMAZON_ORDER_DATE_TAG,
+        AMAZON_PRODUCT_NAME_TAG,
+        AMAZON_SHIPPING_ADDRESS_TAG,
+        PAYPAL_TRANSACTION_ID_TAG,
+        PAYPAL_DATE_TAG,
+        PAYPAL_PAYEE_TAG,
+        PAYPAL_ITEM_TITLE_TAG
+    ])
+
+
+def remove_existing_tags(notes: str) -> str:
+    """Remove Amazon or PayPal tags from notes field."""
+    if notes is None:
+        return ""
+    result = notes
+    
+    # Remove Amazon tags
+    for tag in [
+        (AMAZON_SHIPPING_ADDRESS_TAG, AMAZON_PRODUCT_NAME_TAG),
+        (AMAZON_PRODUCT_NAME_TAG, AMAZON_ORDER_DATE_TAG),
+        (AMAZON_ORDER_DATE_TAG, AMAZON_ORDER_ID_TAG),
+        (AMAZON_ORDER_ID_TAG, None),
+    ]:
+        pattern = re.compile(re.escape(tag[0]) + r"(\s+\S+)?")
+        result = pattern.sub("", result)
+
+    # Remove PayPal tags
+    for tag in [
+        (PAYPAL_ITEM_TITLE_TAG, PAYPAL_PAYEE_TAG),
+        (PAYPAL_PAYEE_TAG, PAYPAL_DATE_TAG),
+        (PAYPAL_DATE_TAG, PAYPAL_TRANSACTION_ID_TAG),
+        (PAYPAL_TRANSACTION_ID_TAG, None),
+    ]:
+        pattern = re.compile(re.escape(tag[0]) + r"(\s+\S+)?")
+        result = pattern.sub("", result)
+    
+    result = re.sub(r"\s+", " ", result)
+    result = result.strip()
+    return result
+
+
+def normalize_tag(tag: str) -> str:
+    """Normalize user custom tag to standard format."""
+    if not tag:
+        return ""
+    tag = tag.strip()
+    if not tag:
+        return ""
+    if tag.startswith(" #"):
+        tag = tag[2:].lstrip()
+        return " #" + tag if tag else ""
+    if tag.startswith("#"):
+        tag = tag[1:].lstrip()
+        return " #" + tag if tag else ""
+    return " #" + tag
+
+
+def process_user_tags(user_tags: Optional[list]) -> list:
+    if not user_tags:
+        return []
+    return [normalize_tag(tag) for tag in user_tags]
+
+
+def create_updated_notes(original_notes: str, tags: list, force: bool = False) -> str:
+    notes = original_notes if original_notes is not None else ""
+    if has_existing_tags(notes):
+        if force:
+            notes = remove_existing_tags(notes)
+        else:
+            return notes
+    notes = notes.strip() + " " + " ".join(tags)
+    return notes.strip()
+
+
+def print_dry_run_csv(transaction: dict, record: Any, original_notes: str, new_notes: str):
+    """Print changes in CSV format for dry-run."""
+    print(f"ID: {transaction.get('id')}")
+    print(f"  Payee: {transaction.get('payee_name') or transaction.get('imported_payee')}")
+    print(f"  Date: {transaction.get('date')}")
+    print(f"  Amount: {transaction.get('amount')}")
+    print(f"  Original Notes: {original_notes}")
+    print(f"  New Notes: {new_notes}")
+    print(f"  Order ID: {record.order_id}")
+    print(f"  Date: {record.date.strftime('%m-%d-%Y') if record.date else 'N/A'}")
+    if hasattr(record, 'product_names'):
+        ccy = getattr(record, 'currency', DEFAULT_BASE_CURRENCY)
+        for i, (product, cost) in enumerate(zip(record.product_names, record.item_amounts)):
+            print(f"  Product {i+1}: {product} ({ccy} {cost:.2f})")
+    else:
+        print(f"  Product: {record.product_name}")
+    print()
+
+
+def print_dry_run_json(transaction: dict, record: Any, original_notes: str, new_notes: str):
+    """Print changes in JSON format for dry-run."""
+    products = None
+    if hasattr(record, 'product_names'):
+        products = [(p, c) for p, c in zip(record.product_names, record.item_amounts)]
+    else:
+        products = [(record.product_name, None)]
+    
+    output = {
+        "transaction_id": transaction.get("id"),
+        "payee": transaction.get("payee_name") or transaction.get("imported_payee"),
+        "date": transaction.get("date"),
+        "amount": transaction.get("amount"),
+        "original_notes": original_notes,
+        "new_notes": new_notes,
+        "order_id": record.order_id,
+        "date_parsed": record.date.strftime("%m-%d-%Y") if record.date else None,
+        "products": products,
+    }
+    print(json.dumps(output, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=f"Update Actual Budget transaction notes with Amazon or PayPal purchase details (v{VERSION})",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Version: {VERSION}
+
+Examples:
+    actual-ecommerce-noter Order_History.csv
+        Dry-run match for Amazon order history
+    actual-ecommerce-noter --format paypal Paypal_Download.csv
+        Dry-run match for PayPal UK exports
+"""
+    )
+    
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--dry-run",
+        nargs="?",
+        const="csv",
+        default="csv",
+        choices=["csv", "json"],
+        help="Dry-run mode (default). Use --dry-run json for JSON output"
+    )
+    mode_group.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually update records in Actual Budget"
+    )
+    
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_DAYS_TOLERANCE,
+        help=f"Number of days tolerance for date matching (default: {DEFAULT_DAYS_TOLERANCE})"
+    )
+    parser.add_argument(
+        "--amount-tolerance",
+        type=float,
+        default=None,
+        help="Amount tolerance (e.g. 1.00 or 0.00) for matching transactions. Default: 1.00 for Amazon, 0.00 for PayPal"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace existing tags in notes field"
+    )
+    parser.add_argument(
+        "-c",
+        "--base-currency",
+        dest="base_currency",
+        default=DEFAULT_BASE_CURRENCY,
+        help=f"Base currency for matching and PayPal correlation conversions (default: {DEFAULT_BASE_CURRENCY})"
+    )
+    parser.add_argument(
+        "-t",
+        "--tag",
+        dest="user_tags",
+        action="append",
+        default=None,
+        help="Add custom tag to matching transactions (can be used multiple times)"
+    )
+    parser.add_argument(
+        "--format",
+        choices=["amazon", "paypal", "ebay", "auto"],
+        default="auto",
+        help="CSV/XLSX source format (amazon, paypal, ebay, or auto-detect based on headers/extensions)"
+    )
+    
+    parser.add_argument("--actual-http-api", dest="actual_http_api", help="URL of actual-http-api server")
+    parser.add_argument("--actual-http-api-file", dest="actual_http_api_file", help="Path to file containing API URL")
+    parser.add_argument("--actual-http-api-key", dest="actual_http_api_key", help="Secret key for actual-http-api")
+    parser.add_argument("--actual-http-api-key-file", dest="actual_http_api_key_file", help="Path to file containing API key")
+    parser.add_argument("--actual-syncid", dest="actual_syncid", help="Budget synchronization ID")
+    parser.add_argument("--actual-syncid-file", dest="actual_syncid_file", help="Path to file containing SyncID")
+    parser.add_argument("--actual-budgetid", dest="actual_budgetid", help="Budget ID")
+    parser.add_argument("--actual-budgetid-file", dest="actual_budgetid_file", help="Path to file containing BudgetID")
+    
+    parser.add_argument("csv_files", nargs="+", help="CSV files containing transaction records")
+    args = parser.parse_args()
+    
+    dry_run = not args.execute
+    output_format = "csv" if args.dry_run == "csv" else args.dry_run
+    
+    if (args.actual_http_api_file and 
+        args.actual_http_api_file == args.actual_http_api_key_file == args.actual_syncid_file == args.actual_budgetid_file):
+        config = parse_config_file(args.actual_http_api_file)
+    else:
+        config = {}
+        
+    try:
+        api_url = get_config_value(args.actual_http_api, ENV_ACTUAL_HTTP_API_URL, args.actual_http_api_file, config)
+        api_key = get_config_value(args.actual_http_api_key, ENV_ACTUAL_HTTP_API_KEY, args.actual_http_api_key_file, config)
+        sync_id = get_config_value(args.actual_syncid, ENV_ACTUAL_SYNCID, args.actual_syncid_file, config)
+    except ValueError as e:
+        parser.error(str(e))
+    
+    missing = []
+    if not api_url: missing.append(ENV_ACTUAL_HTTP_API_URL)
+    if not api_key: missing.append(ENV_ACTUAL_HTTP_API_KEY)
+    if not sync_id: missing.append(ENV_ACTUAL_SYNCID)
+    
+    if missing:
+        print(f"Error: Missing required arguments: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+    
+    csv_files = args.csv_files
+    if not csv_files:
+        print("Error: At least one CSV file must be provided", file=sys.stderr)
+        sys.exit(1)
+        
+    all_records = []
+    detected_format = args.format
+    
+    for csv_file in csv_files:
+        if not os.path.exists(csv_file):
+            print(f"Error: File not found: {csv_file}", file=sys.stderr)
+            sys.exit(1)
+            
+        file_format = args.format
+        if file_format == "auto":
+            if csv_file.lower().endswith(".xlsx") or csv_file.lower().endswith(".xls"):
+                file_format = "ebay"
+            else:
+                with open(csv_file, "r", encoding="utf-8-sig") as f:
+                    header_line = f.readline()
+                    if "Transaction ID" in header_line or "Receipt ID" in header_line:
+                        file_format = "paypal"
+                    else:
+                        file_format = "amazon"
+                        
+        if file_format == "paypal":
+            record_type, records = read_paypal_csv(csv_file, base_currency=args.base_currency)
+            all_records.extend(records)
+            print(f"Loaded {len(records)} records from {csv_file} (PayPal)")
+            detected_format = "paypal"
+        elif file_format == "ebay":
+            record_type, records = read_ebay_xlsx(csv_file)
+            all_records.extend(records)
+            print(f"Loaded {len(records)} records from {csv_file} (eBay)")
+            detected_format = "ebay"
+        else:
+            record_type, records = read_amazon_csv(csv_file)
+            all_records.extend(records)
+            print(f"Loaded {len(records)} raw records from {csv_file} ({record_type})")
+            if detected_format == "auto":
+                detected_format = "amazon"
+                
+    if detected_format == "amazon" and all_records:
+        # Validation: Verify that Refund Details are never processed alone
+        has_refunds = any(r.record_type in ["Refund_Details", "Digital_Returns"] for r in all_records)
+        has_purchases = any(r.record_type in ["Order_History", "Digital_Content_Orders"] for r in all_records)
+        
+        if has_refunds and not has_purchases:
+            print("Error: Amazon Refund Details cannot be processed without the corresponding Order History or Digital Content Orders file.", file=sys.stderr)
+            sys.exit(1)
+            
+        # Index purchase items by Order ID
+        purchases_by_order = {}
+        for r in all_records:
+            if r.record_type in ["Order_History", "Digital_Content_Orders"]:
+                if r.order_id not in purchases_by_order:
+                    purchases_by_order[r.order_id] = []
+                purchases_by_order[r.order_id].append(r)
+                
+        # Group raw purchase records into AmazonOrder objects
+        purchase_orders = {}
+        for r in all_records:
+            if r.record_type in ["Order_History", "Digital_Content_Orders"]:
+                if r.order_id not in purchase_orders:
+                    purchase_orders[r.order_id] = AmazonOrder()
+                purchase_orders[r.order_id].add_item(r)
+                
+        # Group refund records by unique (Order ID, Refund Date, Refund Amount) events to avoid multi-row duplication
+        refund_events = {}
+        for r in all_records:
+            if r.record_type in ["Refund_Details", "Digital_Returns"]:
+                date_key = r.date.date() if r.date else None
+                # Group key uses negative amount
+                amt_key = -abs(r.amount)
+                key = (r.order_id, date_key, amt_key)
+                if key not in refund_events:
+                    refund_events[key] = []
+                refund_events[key].append(r)
+                
+        # Construct refund AmazonOrder objects with resolved product details
+        refund_orders = []
+        for (order_id, date_key, amt_val), r_list in refund_events.items():
+            ref_order = AmazonOrder()
+            ref_order.order_id = order_id
+            ref_order.date = datetime.combine(date_key, datetime.min.time()) if date_key else None
+            ref_order.amount = amt_val # negative
+            ref_order.currency = r_list[0].currency
+            
+            # Cross-reference with order history to retrieve product details
+            if order_id in purchases_by_order:
+                items = purchases_by_order[order_id]
+                if len(items) == 1:
+                    ref_order.product_names = [items[0].product_name]
+                    ref_order.item_amounts = [abs(amt_val)]
+                else:
+                    abs_refund = abs(amt_val)
+                    matched_items = []
+                    for item in items:
+                        if abs(item.amount - abs_refund) < 0.02:
+                            matched_items.append(item)
+                    
+                    if len(matched_items) == 1:
+                        ref_order.product_names = [matched_items[0].product_name]
+                        ref_order.item_amounts = [abs_refund]
+                    else:
+                        total_order_sum = sum(item.amount for item in items)
+                        if abs(total_order_sum - abs_refund) < 0.05:
+                            ref_order.product_names = [item.product_name for item in items]
+                            ref_order.item_amounts = [item.amount for item in items]
+                        else:
+                            candidates_str = "Candidates: " + " | ".join(item.product_name for item in items)
+                            ref_order.product_names = [candidates_str]
+                            ref_order.item_amounts = [abs_refund]
+            else:
+                ref_order.product_names = ["Refund (Order details not found)"]
+                ref_order.item_amounts = [abs(amt_val)]
+                
+            refund_orders.append(ref_order)
+            
+        all_records = list(purchase_orders.values()) + refund_orders
+                
+    days_tolerance = args.days
+    if detected_format == "paypal" and args.days == DEFAULT_DAYS_TOLERANCE:
+        days_tolerance = 7
+        print(f"PayPal format detected: dynamically adjusting default tolerance to {days_tolerance} days")
+    elif detected_format == "ebay" and args.days == DEFAULT_DAYS_TOLERANCE:
+        days_tolerance = 7
+        print(f"eBay format detected: dynamically adjusting default tolerance to {days_tolerance} days")
+ 
+    amount_tolerance_val = args.amount_tolerance
+    if amount_tolerance_val is None:
+        if detected_format in ["paypal", "ebay"]:
+            amount_tolerance = 0
+            print(f"{detected_format.capitalize()} format detected: dynamically adjusting default amount tolerance to 0.00")
+        else:
+            amount_tolerance = 100
+            print("Amazon format detected: dynamically adjusting default amount tolerance to 1.00")
+    else:
+        amount_tolerance = int(round(amount_tolerance_val * 100))
+        print(f"Using user-specified amount tolerance of {amount_tolerance_val:.2f} ({amount_tolerance} cents)")
+ 
+    if not all_records:
+        print("Error: No transaction records loaded", file=sys.stderr)
+        sys.exit(1)
+        
+    api = ActualBudgetAPI(api_url, api_key, sync_id)
+    print("Fetching transactions from Actual Budget...")
+    all_transactions = api.get_all_transactions()
+    
+    if detected_format == "paypal":
+        search_lower = "paypal"
+        transactions = [
+            t for t in all_transactions
+            if search_lower in (t.get("payee_name") or "").lower() or
+               search_lower in (t.get("imported_payee") or "").lower()
+        ]
+        accounts = api.get_accounts()
+        paypal_account_ids = [a["id"] for a in accounts if "paypal" in a.get("name", "").lower()]
+        for acc_id in paypal_account_ids:
+            acc_trans = api.get_transactions(acc_id)
+            existing_ids = {t["id"] for t in transactions}
+            for t in acc_trans:
+                if t["id"] not in existing_ids:
+                    transactions.append(t)
+        print(f"Found {len(transactions)} transactions matching PayPal criteria")
+    elif detected_format == "ebay":
+        search_lower = "ebay"
+        transactions = [
+            t for t in all_transactions
+            if search_lower in (t.get("payee_name") or "").lower() or
+               search_lower in (t.get("imported_payee") or "").lower()
+        ]
+        print(f"Found {len(transactions)} transactions matching eBay criteria")
+    else:
+        search_lower = "amazon"
+        search_lower2 = "amz"
+        transactions = []
+        for t in all_transactions:
+            payee = (t.get("payee_name") or "").lower()
+            imp_payee = (t.get("imported_payee") or "").lower()
+            if (search_lower in payee or search_lower in imp_payee or
+                search_lower2 in payee or search_lower2 in imp_payee):
+                # Ignore digital subscriptions
+                if any(term in payee or term in imp_payee for term in ["prime", "music", "audible", "kindle", "video", "amzn.co.uk/pm", "amznpm"]):
+                    continue
+                transactions.append(t)
+        print(f"Found {len(transactions)} transactions with 'Amazon' in payee (excluding digital subscriptions)")
+        
+    purchase_records = [r for r in all_records if r.amount > 0]
+    refund_records = [r for r in all_records if r.amount < 0]
+    
+    # Sort transactions and CSV records chronologically by date to ensure deterministic matching
+    transactions.sort(key=lambda t: t.get("date", ""))
+    purchase_records.sort(key=lambda r: r.date or datetime.min)
+    refund_records.sort(key=lambda r: r.date or datetime.min)
+    
+    purchase_matches = match_transactions(transactions, purchase_records, days_tolerance, amount_tolerance, verify_payee=(detected_format in ["paypal", "ebay"]), is_income=False)
+    refund_matches = match_transactions(transactions, refund_records, days_tolerance, amount_tolerance, verify_payee=(detected_format in ["paypal", "ebay"]), is_income=True)
+    
+    all_matches = purchase_matches + refund_matches
+    print(f"Found {len(all_matches)} potential matches")
+    
+    user_tags_normalized = process_user_tags(args.user_tags)
+    if user_tags_normalized:
+        print(f"User tags to append: {' '.join(user_tags_normalized)}")
+        
+    updated_count = 0
+    skipped_count = 0
+    error_count = 0
+    split_count = 0
+    
+    for transaction, record in all_matches:
+        original_notes = transaction.get("notes", "")
+        tags = record.get_tags()
+        tags.extend(user_tags_normalized)
+        new_notes = create_updated_notes(original_notes, tags, args.force)
+        
+        if new_notes == original_notes:
+            skipped_count += 1
+            continue
+            
+        if dry_run:
+            if output_format == "csv":
+                print_dry_run_csv(transaction, record, original_notes, new_notes)
+            else:
+                print_dry_run_json(transaction, record, original_notes, new_notes)
+                
+            if hasattr(record, 'product_names') and len(record.product_names) > 1:
+                if transaction.get("is_parent") and not args.force:
+                    print(f"  [SKIP SPLIT] Already a split transaction")
+                else:
+                    sign = -1 if transaction.get("amount", 0) < 0 else 1
+                    splits_preview = []
+                    for pname, iamt in zip(record.product_names, record.item_amounts):
+                        splits_preview.append({"amount": int(round(iamt * 100)) * sign, "notes": pname})
+                    parent_amount = transaction.get("amount", 0)
+                    sub_sum = sum(s["amount"] for s in splits_preview)
+                    if sub_sum != parent_amount:
+                        diff = parent_amount - sub_sum
+                        if abs(diff) <= 100:
+                            splits_preview[-1]["amount"] += diff
+                        else:
+                            splits_preview.append({"amount": diff, "notes": "Amazon Gift Card/Consolidated Adjustment"})
+                    ccy = getattr(record, 'currency', DEFAULT_BASE_CURRENCY)
+                    print(f"  SPLIT: Would create {len(splits_preview)} sub-transactions:")
+                    for idx, sp in enumerate(splits_preview):
+                        print(f"    Sub {idx+1}: {ccy} {abs(sp['amount'])/100:.2f} \u2014 {sp['notes'][:80]}")
+            updated_count += 1
+        else:
+            try:
+                api.update_transaction(transaction["id"], new_notes)
+                print(f"Updated transaction {transaction['id']}")
+                updated_count += 1
+                
+                if hasattr(record, 'product_names') and len(record.product_names) > 1:
+                    if transaction.get("is_parent") and not args.force:
+                        print(f"  Already split \u2014 skipping split creation")
+                    elif transaction.get("is_parent") and args.force:
+                        existing_children = transaction.get("subtransactions", [])
+                        if not existing_children:
+                            try:
+                                endpoint = f"{api.url}/v1/budgets/{api.sync_id}/transactions/{transaction['id']}"
+                                resp = api.session.get(endpoint)
+                                resp.raise_for_status()
+                                fetched = resp.json().get("data", {})
+                                existing_children = fetched.get("subtransactions", [])
+                            except Exception as e:
+                                pass
+                        
+                        sign = -1 if transaction.get("amount", 0) < 0 else 1
+                        new_amounts = []
+                        for pname, iamt in zip(record.product_names, record.item_amounts):
+                            amt = int(round(iamt * 100)) * sign
+                            new_amounts.append({"amount": amt, "notes": pname})
+                            
+                        parent_amount = transaction.get("amount", 0)
+                        sub_sum = sum(s["amount"] for s in new_amounts)
+                        if sub_sum != parent_amount:
+                            diff = parent_amount - sub_sum
+                            if abs(diff) <= 100:
+                                new_amounts[-1]["amount"] += diff
+                            else:
+                                new_amounts.append({"amount": diff, "notes": "Amazon Gift Card/Consolidated Adjustment"})
+                            
+                        for i, child in enumerate(existing_children):
+                            if i < len(new_amounts):
+                                child_id = child.get("id")
+                                new_amt = new_amounts[i]["amount"]
+                                new_note = new_amounts[i]["notes"]
+                                try:
+                                    endpoint = f"{api.url}/v1/budgets/{api.sync_id}/transactions/{child_id}"
+                                    resp = api.session.patch(endpoint, json={"transaction": {"amount": new_amt, "notes": new_note}})
+                                    resp.raise_for_status()
+                                except Exception:
+                                    error_count += 1
+                        split_count += 1
+                    else:
+                        account_id = transaction.get("account", "")
+                        trans_date = transaction.get("date", "")
+                        payee_id = transaction.get("payee", "")
+                        sign = -1 if transaction.get("amount", 0) < 0 else 1
+                        splits = []
+                        for pname, iamt in zip(record.product_names, record.item_amounts):
+                            amt = int(round(iamt * 100)) * sign
+                            splits.append({"amount": amt, "notes": pname})
+                            
+                        parent_amount = transaction.get("amount", 0)
+                        sub_sum = sum(s["amount"] for s in splits)
+                        if sub_sum != parent_amount:
+                            diff = parent_amount - sub_sum
+                            if abs(diff) <= 100:
+                                splits[-1]["amount"] += diff
+                            else:
+                                splits.append({"amount": diff, "notes": "Amazon Gift Card/Consolidated Adjustment"})
+                            
+                        try:
+                            api.split_transaction(transaction["id"], account_id, trans_date, payee_id, splits)
+                            print(f"  Split into {len(splits)} sub-transactions")
+                            split_count += 1
+                        except Exception as e:
+                            print(f"  Error splitting {transaction['id']}: {e}", file=sys.stderr)
+                            error_count += 1
+            except Exception as e:
+                print(f"Error updating transaction {transaction['id']}: {e}", file=sys.stderr)
+                error_count += 1
+                
+    print()
+    print(f"Summary:")
+    print(f"  Total matches found: {len(all_matches)}")
+    print(f"  Records updated: {updated_count}")
+    print(f"  Records skipped (already processed): {skipped_count}")
+    print(f"  Transactions split: {split_count}")
+    if error_count > 0:
+        print(f"  Errors: {error_count}", file=sys.stderr)
+    if dry_run:
+        print(f"  Mode: DRY-RUN (use --execute to actually update)")
+    else:
+        print(f"  Mode: EXECUTE (records have been updated)")
+        
+    if error_count > 0:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

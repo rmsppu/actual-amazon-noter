@@ -1,28 +1,11 @@
 #!/usr/bin/env python3
-"""
-Setup script for actual-amazon-noter
-
-This script installs the actual-amazon-noter executable and its dependencies.
-
-Usage:
-    pip install .
-    python setup.py install
-"""
-
 from setuptools import setup, find_packages
-from pathlib import Path
-
-# Read the long description from README.txt
-readme_path = Path(__file__).parent / "README.txt"
-long_description = ""
-if readme_path.exists():
-    long_description = readme_path.read_text(encoding="utf-8")
 
 setup(
-    name="actual-amazon-noter",
-    version="1.0.0",
-    description="Update Actual Budget transaction notes with Amazon order details",
-    long_description=long_description,
+    name="actual-ecommerce-noter",
+    version="2.2.0-fork.9",
+    description="Update Actual Budget transaction notes with Amazon and PayPal order details",
+    long_description="Update Actual Budget transaction notes with Amazon and PayPal order details",
     long_description_content_type="text/plain",
     author="",
     author_email="",
@@ -34,7 +17,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "actual-amazon-noter=actual-amazon-noter:main",
+            "actual-ecommerce-noter=actual-ecommerce-noter:main",
         ],
     },
     python_requires=">=3.7",

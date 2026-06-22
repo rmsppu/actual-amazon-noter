@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eCommerce Noter — Actual Budget Companion</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0c1625;
+            --card-bg: rgba(30, 46, 74, 0.9);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --primary: #9333ea;
+            --primary-glow: rgba(147, 51, 234, 0.35);
+            --accent: #3b82f6;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-color: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 10% 10%, rgba(147, 51, 234, 0.15) 0px, transparent 50%),
+                radial-gradient(at 90% 90%, rgba(59, 130, 246, 0.15) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem 1rem;
+            overflow-x: hidden;
+        }
+
+        .setting-card.disabled {
+            opacity: 0.4;
+            pointer-events: none;
+            cursor: not-allowed;
+            background: rgba(0, 0, 0, 0.08);
+            border-color: rgba(255, 255, 255, 0.02);
+        }
+
+        .container {
+            width: 100%;
+            max-width: 850px;
+            z-index: 10;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+            animation: fadeInDown 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+        .app-badge {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            color: white;
+            padding: 0.35rem 0.85rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            display: inline-block;
+            margin-bottom: 0.75rem;
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 40%, #e2e8f0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            font-weight: 400;
+        }
+
+        .glass-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 2.5rem;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            animation: fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.1s both;
+        }
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .setting-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: all 0.3s ease;
+        }
+
+        .setting-card:hover {
+            border-color: rgba(139, 92, 246, 0.3);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .setting-title {
+            font-weight: 600;
+            font-size: 0.95rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .setting-desc {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+            line-height: 1.3;
+        }
+
+        /* Toggle Switches */
+        .switch-container {
+            display: flex;
+            align-items: center;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 26px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.1);
+            transition: .3s cubic-bezier(0.16, 1, 0.3, 1);
+            border-radius: 34px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .3s cubic-bezier(0.16, 1, 0.3, 1);
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(22px);
+        }
+
+        /* Number input */
+        .number-input {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: white;
+            padding: 0.5rem 0.75rem;
+            font-family: inherit;
+            font-size: 0.9rem;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .number-input:focus {
+            border-color: var(--primary);
+        }
+
+        /* Drop Zone */
+        .drop-zone {
+            border: 2px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 16px;
+            padding: 3rem 2rem;
+            text-align: center;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.01);
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            margin-bottom: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: var(--primary);
+            background: rgba(139, 92, 246, 0.04);
+            box-shadow: 0 0 30px rgba(139, 92, 246, 0.1);
+        }
+
+        .drop-zone-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            transition: transform 0.3s ease;
+            display: inline-block;
+        }
+
+        .drop-zone:hover .drop-zone-icon {
+            transform: translateY(-5px);
+        }
+
+        .drop-zone-text {
+            font-size: 1.1rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+
+        .drop-zone-subtext {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .file-info {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            background: rgba(139, 92, 246, 0.1);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            padding: 0.75rem 1.25rem;
+            border-radius: 12px;
+            max-width: fit-content;
+            margin: 1rem auto 0;
+            animation: scaleIn 0.3s ease;
+        }
+
+        .file-info-icon {
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 1.1rem;
+            border: none;
+            border-radius: 14px;
+            font-family: inherit;
+            font-weight: 600;
+            font-size: 1.05rem;
+            color: white;
+            cursor: pointer;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(139, 92, 246, 0.5);
+        }
+
+        .btn:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-spinner {
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+
+        /* Log Terminal */
+        .terminal {
+            margin-top: 2rem;
+            background: #07080b;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            overflow: hidden;
+            display: none;
+            box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.8);
+            animation: slideDown 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .terminal-header {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 0.75rem 1.25rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .terminal-title {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .terminal-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--primary);
+            box-shadow: 0 0 8px var(--primary-glow);
+        }
+
+        .terminal-dot.success { background-color: var(--success); box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
+        .terminal-dot.running { animation: pulse 1s infinite alternate; }
+
+        .terminal-body {
+            padding: 1.5rem;
+            max-height: 450px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            color: #d1d5db;
+        }
+
+        .terminal-body pre {
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* Custom syntax highlight tags inside logs */
+        .log-match { color: var(--success); }
+        .log-split { color: #818cf8; }
+        .log-skip { color: var(--warning); font-weight: 500; }
+        .log-error { color: var(--danger); font-weight: 600; }
+        .log-info { color: #38bdf8; }
+        .log-breadcrumb { color: var(--text-muted); opacity: 0.65; font-size: 0.8rem; }
+        .log-llm { color: #d946ef; font-weight: 500; }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes scaleIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        @keyframes slideDown {
+            from { opacity: 0; max-height: 0; }
+            to { opacity: 1; max-height: 600px; }
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            from { opacity: 0.4; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <span class="app-badge">Actual Budget Companion</span>
+        <h1>eCommerce Noter</h1>
+        <p class="subtitle">Correlate and split eCommerce order exports (e.g., Amazon, PayPal, eBay) with your budget transactions</p>
+    </header>
+
+    <main class="glass-card">
+        <form id="uploadForm">
+            <!-- Settings panel -->
+            <div class="settings-grid">
+                <div class="setting-card">
+                    <div>
+                        <div class="setting-title">Dry Run Mode</div>
+                        <div class="setting-desc">Preview matches and item splits without modifying the database.</div>
+                    </div>
+                    <div class="switch-container">
+                        <label class="switch">
+                            <input type="checkbox" id="dryRunToggle" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setting-card">
+                    <div>
+                        <div class="setting-title">Force Recalculation</div>
+                        <div class="setting-desc">Overwrite existing tags on previously processed transactions.</div>
+                    </div>
+                    <div class="switch-container">
+                        <label class="switch">
+                            <input type="checkbox" id="forceToggle">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setting-card">
+                    <div>
+                        <div class="setting-title">Post-Process Auto-Trigger</div>
+                        <div class="setting-desc">Automatically run AI classification on successful CSV uploads.</div>
+                    </div>
+                    <div class="switch-container">
+                        <label class="switch">
+                            <input type="checkbox" id="autoTriggerToggle">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setting-card">
+                    <div>
+                        <div class="setting-title">File Source Format</div>
+                        <div class="setting-desc">Select which format of CSV/XLSX you are uploading.</div>
+                    </div>
+                    <select id="formatSelect" class="number-input" style="width: auto; padding: 8px 12px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #fff; border-radius: 8px; outline: none; cursor: pointer;">
+                        <option value="auto" style="background: #1e1e2f; color: #fff;">Auto-Detect Format</option>
+                        <option value="amazon" style="background: #1e1e2f; color: #fff;">Amazon (Order History CSV)</option>
+                        <option value="paypal" style="background: #1e1e2f; color: #fff;">PayPal (UK Download CSV)</option>
+                        <option value="ebay" style="background: #1e1e2f; color: #fff;">eBay (Purchase History XLSX)</option>
+                    </select>
+                </div>
+
+                <div class="setting-card">
+                    <div>
+                        <div class="setting-title">Date Tolerance</div>
+                        <div class="setting-desc">Max days the budget transaction date can occur after the order date.</div>
+                    </div>
+                    <input type="text" id="daysInput" class="number-input" value="Default" disabled>
+                </div>
+
+                <div class="setting-card">
+                    <div>
+                        <div class="setting-title">Amount Tolerance</div>
+                        <div class="setting-desc">Max absolute amount mismatch in currency units (e.g. 1.00 for Amazon, 0.00 for PayPal).</div>
+                    </div>
+                    <input type="text" id="amountToleranceInput" class="number-input" value="Default" disabled>
+                </div>
+            </div>
+
+            <!-- Drag and Drop uploader -->
+            <div class="drop-zone" id="dropZone">
+                <div class="drop-zone-icon">📦</div>
+                <div class="drop-zone-text" id="dropZoneText">Drag & Drop CSV or XLSX file(s) here</div>
+                <div class="drop-zone-subtext" id="dropZoneSubtext">Supports Amazon (Order History + Refund Details), PayPal, and eBay exports</div>
+                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" multiple style="display: none;">
+                
+                <div class="file-info" id="fileInfo">
+                    <span class="file-info-icon">📄</span>
+                    <span id="fileName">No file chosen</span>
+                </div>
+            </div>
+
+            <!-- Run Button -->
+            <button type="submit" class="btn" id="submitBtn" disabled>
+                <div class="btn-spinner" id="btnSpinner"></div>
+                <span id="btnText">Process File</span>
+            </button>
+        </form>
+
+        <!-- Log Terminal Output -->
+        <div class="terminal" id="logTerminal">
+            <div class="terminal-header">
+                <div class="terminal-title">
+                    <div class="terminal-dot running" id="terminalDot"></div>
+                    <span>Console Log Output</span>
+                </div>
+            </div>
+            <div class="terminal-body">
+                <pre id="logContent">Preparing processor...</pre>
+            </div>
+        </div>
+
+        <!-- AI Assistant Integration Card -->
+        <div class="setting-card" id="aiAssistantCard" style="background: rgba(147, 51, 234, 0.04); border: 1px solid rgba(147, 51, 234, 0.12); margin-top: 2rem;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; width: 100%;">
+                <div style="flex: 1; min-width: 250px;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                        <span style="font-size: 1.2rem;">🤖</span>
+                        <div class="setting-title" style="font-size: 1.1rem; margin-bottom: 0; background: linear-gradient(135deg, #a78bfa, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">AI Assistant Integration</div>
+                    </div>
+                    <div class="setting-desc" id="aiStatusText" style="font-size: 0.9rem; margin-bottom: 0.5rem; font-family: 'JetBrains Mono', monospace;">
+                        AI Status: Checking integration...
+                    </div>
+                    <div class="setting-desc" style="margin-bottom: 0.75rem;">
+                        Trigger the Gemini-powered transaction classifier on-demand.
+                    </div>
+                    
+                    <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
+                        <button type="button" class="btn" id="runAiBtn" style="width: auto; padding: 0.6rem 1.25rem; font-size: 0.9rem; border-radius: 8px; background: linear-gradient(135deg, #9333ea, #3b82f6); margin-top: 0.5rem; box-shadow: 0 4px 10px rgba(147, 51, 234, 0.2);" disabled>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <div class="btn-spinner" id="aiBtnSpinner" style="width: 14px; height: 14px; border-width: 2px;"></div>
+                                <span id="aiBtnText">Run AI Classifier</span>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- AI Logs Terminal inside the card, collapsible -->
+            <div class="terminal" id="aiTerminal" style="margin-top: 1.5rem; display: none; width: 100%;">
+                <div class="terminal-header">
+                    <div class="terminal-title">
+                        <div class="terminal-dot running" id="aiTerminalDot"></div>
+                        <span>AI Classification Log Output</span>
+                    </div>
+                </div>
+                <div class="terminal-body" style="max-height: 250px; background: #040507;">
+                    <pre id="aiLogContent" style="color: #a7f3d0;"></pre>
+                </div>
+            </div>
+        </div>
+    </main>
+    <footer style="text-align: center; margin-top: 2rem; font-size: 0.85rem; color: var(--text-muted); opacity: 0.8; animation: fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;">
+        <p>Built for <a href="https://actualbudget.org" target="_blank" style="color: var(--primary); text-decoration: none; font-weight: 500;">Actual Budget</a> &bull; <a href="https://github.com/rr4444/actual-ecommerce-noter" target="_blank" style="color: var(--primary); text-decoration: none; font-weight: 500;">actual-ecommerce-noter{% if commit_hash and commit_hash != 'unknown' %} ({{ commit_hash }}){% endif %}</a> &bull; <a id="diagnosticsLink" href="diagnostics" target="_blank" style="color: var(--primary); text-decoration: none; font-weight: 500;">Raw Diagnostics</a></p>
+    </footer>
+</div>
+
+<script>
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileInfo = document.getElementById('fileInfo');
+    const fileName = document.getElementById('fileName');
+    const submitBtn = document.getElementById('submitBtn');
+    const btnSpinner = document.getElementById('btnSpinner');
+    const btnText = document.getElementById('btnText');
+    const uploadForm = document.getElementById('uploadForm');
+    const logTerminal = document.getElementById('logTerminal');
+    const logContent = document.getElementById('logContent');
+    const terminalDot = document.getElementById('terminalDot');
+
+    let selectedFiles = [];
+    const diagnosticsLink = document.getElementById('diagnosticsLink');
+
+    // Dynamically calculate paths based on current window location to ensure perfect Traefik subpath routing
+    let basePath = window.location.pathname;
+    if (!basePath.endsWith('/')) {
+        basePath += '/';
+    }
+    diagnosticsLink.href = basePath + 'diagnostics';
+
+    // Trigger click on file input
+    dropZone.addEventListener('click', (e) => {
+        if (e.target !== fileInput) {
+            fileInput.click();
+        }
+    });
+
+    // Handle selected files via input
+    fileInput.addEventListener('change', (e) => {
+        if (fileInput.files.length > 0) {
+            handleFiles(fileInput.files);
+        }
+    });
+
+    // Drag over effects
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+
+    ['dragleave', 'dragend'].forEach(type => {
+        dropZone.addEventListener(type, () => {
+            dropZone.classList.remove('dragover');
+        });
+    });
+
+    // Drop files
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) {
+            handleFiles(e.dataTransfer.files);
+        }
+    });
+
+    function validateFiles(files) {
+        let hasRefund = false;
+        let hasPurchase = false;
+        
+        for (const file of files) {
+            const name = file.name.toLowerCase();
+            if (name.includes('refund') || name.includes('return')) {
+                hasRefund = true;
+            } else if (name.includes('order') || name.includes('purchase')) {
+                hasPurchase = true;
+            }
+        }
+        
+        if (hasRefund && !hasPurchase) {
+            return {
+                valid: false,
+                error: 'Amazon Refund Details CSV cannot be processed alone; please drag it together with your Amazon Order History CSV.'
+            };
+        }
+        return { valid: true };
+    }
+
+    function handleFiles(filesList) {
+        const files = Array.from(filesList);
+        const validFiles = [];
+        
+        for (const file of files) {
+            const lowerName = file.name.toLowerCase();
+            if (lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+                validFiles.push(file);
+            }
+        }
+        
+        if (validFiles.length === 0) {
+            alert('Please select valid CSV or XLSX files.');
+            return;
+        }
+        
+        const valResult = validateFiles(validFiles);
+        if (!valResult.valid) {
+            alert(valResult.error);
+            selectedFiles = [];
+            fileInfo.style.display = 'none';
+            submitBtn.disabled = true;
+            return;
+        }
+        
+        selectedFiles = validFiles;
+        
+        if (selectedFiles.length === 1) {
+            fileName.textContent = `${selectedFiles[0].name} (${(selectedFiles[0].size / 1024).toFixed(1)} KB)`;
+        } else {
+            fileName.textContent = `${selectedFiles.length} files selected: ` + selectedFiles.map(f => f.name).join(', ');
+        }
+        fileInfo.style.display = 'flex';
+        submitBtn.disabled = false;
+    }
+
+    function cleanPythonBytesString(str) {
+        if (typeof str !== 'string') return str;
+        let s = str.trim();
+        if ((s.startsWith("b'") && s.endsWith("'")) || (s.startsWith('b"') && s.endsWith('"'))) {
+            s = s.substring(2, s.length - 1);
+            // Replace escaped sequences like \n, \t, \r, \', \", \\
+            s = s.replace(/\\n/g, '\n')
+                 .replace(/\\r/g, '\r')
+                 .replace(/\\t/g, '\t')
+                 .replace(/\\'/g, "'")
+                 .replace(/\\"/g, '"')
+                 .replace(/\\\\/g, '\\');
+        }
+        return s;
+    }
+
+    // Color/Style the logs dynamically for premium observability
+    function colorizeLogs(text) {
+        if (!text) return '';
+        // Escape HTML entities to prevent rendering issues or security vulnerabilities
+        let escaped = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        // Highlight matching/processing/system statements
+        escaped = escaped
+            .replace(/(Matching.*|Processing.*|Application started|Starting classification process|Syncing.*|Got messages.*|Budget downloaded|Bank accounts synced)/gi, '<span class="log-info">$1</span>')
+            .replace(/(Error.*|Failed.*|Exception.*|Could not.*)/gi, '<span class="log-error">$1</span>')
+            .replace(/(Split into.*|Split:.*|Would create.*|Sub \d+.*|Cleaned LLM response.*)/gi, '<span class="log-split">$1</span>')
+            .replace(/(Already split.*|Already processed.*|Already a split.*|Records skipped.*|Ignoring.*|Excluded.*|Already has a category)/gi, '<span class="log-skip">$1</span>')
+            .replace(/(Updated transaction.*|Matches found.*|Transactions split.*|Using existing category.*|Successfully categorized.*)/gi, '<span class="log-match">$1</span>');
+
+        // Style Sentry/Breadcrumb logs specifically to be muted
+        escaped = escaped.replace(/(\[Breadcrumb\].*)/g, '<span class="log-breadcrumb">$1</span>');
+        
+        // Highlight LLM calls
+        escaped = escaped.replace(/(Making LLM request to.*)/g, '<span class="log-llm">$1</span>');
+
+        return escaped;
+    }
+
+    const formatSelect = document.getElementById('formatSelect');
+    const getSubmitBtnText = () => {
+        const val = formatSelect.value;
+        if (val === 'amazon') return 'Process Amazon CSV';
+        if (val === 'paypal') return 'Process PayPal CSV';
+        if (val === 'ebay') return 'Process eBay XLSX';
+        return 'Process File';
+    };
+
+    function updateGhostedStates() {
+        if (btnText.textContent !== 'Processing...') {
+            btnText.textContent = getSubmitBtnText();
+        }
+        
+        const daysInput = document.getElementById('daysInput');
+        const amountInput = document.getElementById('amountToleranceInput');
+        const daysCard = daysInput.closest('.setting-card');
+        const amountCard = amountInput.closest('.setting-card');
+        
+        const dryRunToggle = document.getElementById('dryRunToggle');
+        const autoTriggerToggle = document.getElementById('autoTriggerToggle');
+        const autoTriggerCard = autoTriggerToggle.closest('.setting-card');
+        
+        if (dryRunToggle.checked) {
+            autoTriggerToggle.checked = false;
+            autoTriggerToggle.disabled = true;
+            autoTriggerCard.classList.add('disabled');
+        } else {
+            autoTriggerToggle.disabled = false;
+            autoTriggerCard.classList.remove('disabled');
+            const storedAutoTrigger = localStorage.getItem('autoTriggerAi');
+            if (storedAutoTrigger !== null) {
+                autoTriggerToggle.checked = storedAutoTrigger === 'true';
+            }
+        }
+
+        if (formatSelect.value === 'auto') {
+            daysInput.type = 'text';
+            daysInput.value = 'Default';
+            daysInput.disabled = true;
+            
+            amountInput.type = 'text';
+            amountInput.value = 'Default';
+            amountInput.disabled = true;
+            
+            daysCard.classList.add('disabled');
+            amountCard.classList.add('disabled');
+        } else {
+            daysInput.type = 'number';
+            daysInput.disabled = false;
+            
+            amountInput.type = 'number';
+            amountInput.disabled = false;
+            
+            daysCard.classList.remove('disabled');
+            amountCard.classList.remove('disabled');
+            
+            if (formatSelect.value === 'paypal') {
+                daysInput.value = '7';
+                amountInput.value = '0.00';
+            } else if (formatSelect.value === 'amazon') {
+                daysInput.value = '3';
+                amountInput.value = '1.00';
+            } else if (formatSelect.value === 'ebay') {
+                daysInput.value = '7';
+                amountInput.value = '0.00';
+            }
+        }
+    }
+
+    formatSelect.addEventListener('change', updateGhostedStates);
+    document.getElementById('dryRunToggle').addEventListener('change', updateGhostedStates);
+    // Trigger on load to set initial state
+    updateGhostedStates();
+
+    // AI Integration DOM Elements
+    const aiStatusText = document.getElementById('aiStatusText');
+    const runAiBtn = document.getElementById('runAiBtn');
+    const aiBtnSpinner = document.getElementById('aiBtnSpinner');
+    const aiBtnText = document.getElementById('aiBtnText');
+    const autoTriggerToggle = document.getElementById('autoTriggerToggle');
+    const aiTerminal = document.getElementById('aiTerminal');
+    const aiLogContent = document.getElementById('aiLogContent');
+    const aiTerminalDot = document.getElementById('aiTerminalDot');
+
+    // Auto-trigger toggle storage
+    const storedAutoTrigger = localStorage.getItem('autoTriggerAi');
+    if (storedAutoTrigger !== null) {
+        autoTriggerToggle.checked = storedAutoTrigger === 'true';
+    } else {
+        autoTriggerToggle.checked = false; // default
+    }
+    
+    autoTriggerToggle.addEventListener('change', () => {
+        if (!document.getElementById('dryRunToggle').checked) {
+            localStorage.setItem('autoTriggerAi', autoTriggerToggle.checked);
+        }
+    });
+
+    // Check AI Status
+    async function checkAiStatus() {
+        try {
+            const response = await fetch(basePath + 'ai/status');
+            const data = await response.json();
+            if (data.enabled) {
+                aiStatusText.textContent = `AI Status: Initial Integration Checked (${data.mode} Mode)`;
+                aiStatusText.style.color = 'var(--success)';
+                runAiBtn.disabled = false;
+            } else {
+                aiStatusText.textContent = `AI Status: Initial Integration Missing (Dormant)`;
+                aiStatusText.style.color = 'var(--danger)';
+                runAiBtn.disabled = true;
+                if (data.error) {
+                    console.warn("AI integration dormant:", data.error);
+                }
+            }
+        } catch (error) {
+            aiStatusText.textContent = `AI Status: Initial Integration Missing (Dormant)`;
+            aiStatusText.style.color = 'var(--danger)';
+            runAiBtn.disabled = true;
+            console.error("Failed to check AI status:", error);
+        }
+    }
+
+    // Trigger AI Classification
+    async function triggerAiClassification(auto = false) {
+        runAiBtn.disabled = true;
+        aiBtnSpinner.style.display = 'block';
+        aiBtnText.textContent = auto ? 'Auto-running AI...' : 'Running...';
+        
+        aiTerminal.style.display = 'block';
+        aiLogContent.textContent = auto ? 'Post-Noter Auto-Trigger active.\nConnecting to AI agent and spawning task...\n' : 'Initializing classification request...\n';
+        aiTerminalDot.className = 'terminal-dot running';
+        aiTerminal.scrollIntoView({ behavior: 'smooth' });
+
+        try {
+            const response = await fetch(basePath + 'ai/classify', { method: 'POST' });
+            const data = await response.json();
+            
+            if (data.success && data.job_id) {
+                aiLogContent.textContent += `Successfully spawned classification ${data.mode} Job: ${data.job_id}\nStreaming logs...\n----------------------------------------------------------\n`;
+                pollAiLogs(data.job_id);
+            } else {
+                aiLogContent.textContent += `Error triggering classification: ${data.error || 'Unknown error'}\n`;
+                aiTerminalDot.className = 'terminal-dot';
+                resetAiBtn();
+            }
+        } catch (error) {
+            aiLogContent.textContent += `Failed to connect to trigger API: ${error.message}\n`;
+            aiTerminalDot.className = 'terminal-dot';
+            resetAiBtn();
+        }
+    }
+
+    function resetAiBtn() {
+        runAiBtn.disabled = false;
+        aiBtnSpinner.style.display = 'none';
+        aiBtnText.textContent = 'Run AI Classifier';
+    }
+
+    function pollAiLogs(jobId) {
+        const interval = setInterval(async () => {
+            try {
+                const response = await fetch(basePath + 'ai/logs/' + jobId);
+                if (!response.ok) {
+                    throw new Error(`HTTP status ${response.status}`);
+                }
+                const data = await response.json();
+                
+                if (data.logs) {
+                    aiLogContent.innerHTML = colorizeLogs(cleanPythonBytesString(data.logs));
+                    aiTerminal.querySelector('.terminal-body').scrollTop = aiTerminal.querySelector('.terminal-body').scrollHeight;
+                }
+                
+                if (data.status === 'success') {
+                    clearInterval(interval);
+                    aiTerminalDot.className = 'terminal-dot success';
+                    resetAiBtn();
+                } else if (data.status === 'failed') {
+                    clearInterval(interval);
+                    aiTerminalDot.className = 'terminal-dot';
+                    resetAiBtn();
+                }
+            } catch (error) {
+                clearInterval(interval);
+                aiLogContent.innerHTML += `\n<span class="log-error">Error fetching logs: ${error.message}</span>`;
+                aiTerminalDot.className = 'terminal-dot';
+                resetAiBtn();
+            }
+        }, 1500);
+    }
+
+    runAiBtn.addEventListener('click', () => {
+        triggerAiClassification(false);
+    });
+
+    // Run AI check on load
+    checkAiStatus();
+
+    function resetProcessBtn() {
+        submitBtn.disabled = false;
+        btnSpinner.style.display = 'none';
+        btnText.textContent = getSubmitBtnText();
+        logTerminal.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function pollNoterLogs(jobId) {
+        const interval = setInterval(async () => {
+            try {
+                const response = await fetch(basePath + 'process/status/' + jobId);
+                if (!response.ok) {
+                    throw new Error(`HTTP status ${response.status}`);
+                }
+                const data = await response.json();
+                
+                if (data.logs) {
+                    logContent.innerHTML = colorizeLogs(cleanPythonBytesString(data.logs));
+                    logTerminal.querySelector('.terminal-body').scrollTop = logTerminal.querySelector('.terminal-body').scrollHeight;
+                }
+                
+                if (data.status === 'success') {
+                    clearInterval(interval);
+                    terminalDot.className = 'terminal-dot success';
+                    resetProcessBtn();
+                    
+                    // Post-Process Auto-Trigger Cascade
+                    if (autoTriggerToggle.checked && !runAiBtn.disabled) {
+                        setTimeout(() => {
+                            triggerAiClassification(true);
+                        }, 1000);
+                    }
+                } else if (data.status === 'failed') {
+                    clearInterval(interval);
+                    terminalDot.className = 'terminal-dot';
+                    resetProcessBtn();
+                }
+            } catch (error) {
+                clearInterval(interval);
+                logContent.innerHTML += `\n<span class="log-error">Error fetching logs: ${error.message}</span>`;
+                terminalDot.className = 'terminal-dot';
+                resetProcessBtn();
+            }
+        }, 1500);
+    }
+
+    // Submit form and request backend processing
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (selectedFiles.length === 0) return;
+
+        // UI State: Processing
+        submitBtn.disabled = true;
+        btnSpinner.style.display = 'block';
+        btnText.textContent = 'Processing...';
+        
+        // Show terminal
+        logTerminal.style.display = 'block';
+        logContent.innerHTML = 'Connecting to Actual Budget API and running matcher...\n';
+        terminalDot.className = 'terminal-dot running';
+
+        const formData = new FormData();
+        selectedFiles.forEach(file => {
+            formData.append('file', file);
+        });
+        formData.append('execute', !document.getElementById('dryRunToggle').checked);
+        formData.append('force', document.getElementById('forceToggle').checked);
+        formData.append('days', document.getElementById('daysInput').value);
+        formData.append('amount_tolerance', document.getElementById('amountToleranceInput').value);
+        formData.append('format', formatSelect.value);
+
+        try {
+            const response = await fetch(basePath + 'process', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success && data.job_id) {
+                logContent.innerHTML = `Successfully started processing job: ${data.job_id}\nStreaming logs...\n----------------------------------------------------------\n`;
+                pollNoterLogs(data.job_id);
+            } else {
+                logContent.innerHTML = `<span class="log-error">Error: ${data.error || 'Server error occurred'}</span>`;
+                terminalDot.className = 'terminal-dot';
+                resetProcessBtn();
+            }
+        } catch (error) {
+            logContent.innerHTML = `<span class="log-error">Error: Failed to connect to server: ${error.message}</span>`;
+            terminalDot.className = 'terminal-dot';
+            resetProcessBtn();
+        }
+    });
+</script>
+
+</body>
+</html>
