@@ -1,3 +1,23 @@
+# SUPERSEDED
+This project has been superseded by https://github.com/rr4444/actual-ecommerce-noter
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # actual-amazon-noter
 Add tags to Actual Budget notes based on Amazon order history
 # actual-amazon-noter
